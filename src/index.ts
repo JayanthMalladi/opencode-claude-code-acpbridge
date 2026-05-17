@@ -251,33 +251,34 @@ export function createACPProviderFromEnv(
  * it looks for an export starting with `create` and calls it with
  * `{ name, ...options }` from the provider config.
  *
- * All fields are optional — they fall back to the corresponding environment
- * variables (see {@link createACPProviderFromEnv}).
+ * Every field resolved **first** from the options object (what you put in
+ * `"options"` in OpenCode config), then falls back to the corresponding
+ * environment variable.
  */
 export interface ACPModelProviderOptions {
   /** Provider name (set by OpenCode from config). */
   name?: string;
 
-  /** ACP agent command (env: `ACP_COMMAND`). */
+  /** ACP agent command — e.g. `"gemini"`, `"claude-code-acp"`, `"codex-acp"`. */
   command?: string;
-  /** Arguments array or JSON string (env: `ACP_ARGS`). */
-  args?: string | string[];
-  /** Working directory (env: `ACP_CWD`). */
+  /** Arguments array. */
+  args?: string[];
+  /** Working directory for the ACP agent. */
   cwd?: string;
-  /** MCP server configurations array or JSON string (env: `ACP_MCP_SERVERS`). */
-  mcpServers?: unknown[];
-  /** Session delay in ms (env: `ACP_SESSION_DELAY_MS`). */
+  /** MCP server configurations to provide tools to the agent. */
+  mcpServers?: ACPProviderSettings["session"]["mcpServers"];
+  /** Delay in ms before initialising the ACP connection. */
   sessionDelayMs?: number;
-  /** Auth method ID (env: `AUTH_METHOD_ID`). */
+  /** Authentication method ID (for agents that require auth). */
   authMethodId?: string;
-  /** Persist session (env: `ACP_PERSIST_SESSION`). */
+  /** Keep the ACP session alive across calls. */
   persistSession?: boolean;
-  /** Resume existing session by ID (env: `ACP_EXISTING_SESSION_ID`). */
+  /** Resume an existing session by ID. */
   existingSessionId?: string;
-  /** Extra env vars for the agent process — Record or JSON string (env: `ACP_ENV`). */
-  env?: Record<string, string> | string;
+  /** Extra environment variables for the agent process. */
+  env?: Record<string, string>;
 
-  /** Extra MCP servers to append. */
+  /** Additional MCP servers appended to `mcpServers`. */
   extraMcpServers?: ACPProviderSettings["session"]["mcpServers"];
 }
 
@@ -295,12 +296,95 @@ export interface ACPModelProvider {
 }
 
 /**
+ * Resolve each config field from options first, then env var.
+ *
+ * `ACPEnvConfig` uses `string`-typed values (since env vars are strings).
+ * Options provide the parsed types directly (string[], boolean, number, …).
+ */
+function pick<T>(
+  optsValue: T | undefined,
+  envValue: string | undefined,
+  parse: (raw: string) => T,
+): T | undefined {
+  return optsValue !== undefined ? optsValue : (envValue !== undefined ? parse(envValue) : undefined);
+}
+
+function resolveACPConfig(
+  opts: ACPModelProviderOptions,
+): ACPProviderSettings {
+  const command = opts.command ?? process.env.ACP_COMMAND ?? undefined;
+  if (!command) throw new ACPConfigurationError(["ACP_COMMAND"]);
+
+  const args =
+    opts.args ??
+    pick<string[] | undefined>(
+      undefined,
+      process.env.ACP_ARGS,
+      (raw) => {
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed : raw.split(/\s+/).filter(Boolean);
+        } catch { return raw.split(/\s+/).filter(Boolean); }
+      },
+    );
+
+  const mcpServersFromOptions = opts.mcpServers ?? [];
+  const mcpServersFromEnv = pick<ACPProviderSettings["session"]["mcpServers"]>(
+    undefined,
+    process.env.ACP_MCP_SERVERS,
+    (raw) => { try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; } },
+  ) ?? [];
+  const extraMcpServers = opts.extraMcpServers ?? [];
+
+  const mcpServers = [...mcpServersFromOptions, ...mcpServersFromEnv, ...extraMcpServers];
+
+  const sessionDelayMs = pick<number | undefined>(
+    opts.sessionDelayMs,
+    process.env.ACP_SESSION_DELAY_MS,
+    Number,
+  );
+
+  const authMethodId = opts.authMethodId ?? process.env.AUTH_METHOD_ID ?? undefined;
+
+  const persistSession =
+    opts.persistSession ??
+    pick<boolean>(
+      undefined,
+      process.env.ACP_PERSIST_SESSION,
+      (v) => v === "true",
+    ) ??
+    false;
+
+  const existingSessionId = opts.existingSessionId ?? process.env.ACP_EXISTING_SESSION_ID ?? undefined;
+
+  const env = opts.env ?? pick<Record<string, string>>(
+    undefined,
+    process.env.ACP_ENV,
+    (raw) => { try { return JSON.parse(raw); } catch { return {}; } },
+  );
+
+  return {
+    command,
+    args: args && args.length > 0 ? args : undefined,
+    sessionDelayMs: sessionDelayMs && !Number.isNaN(sessionDelayMs) ? sessionDelayMs : undefined,
+    authMethodId,
+    persistSession,
+    existingSessionId,
+    env: env && Object.keys(env).length > 0 ? env : undefined,
+    session: {
+      cwd: opts.cwd || process.env.ACP_CWD || process.cwd(),
+      mcpServers,
+    },
+  };
+}
+
+/**
  * Create an ACP model provider for use with **OpenCode** (or any AI SDK consumer).
  *
  * **OpenCode auto‑discovers** this function because it starts with `create`.
  *
- * Configuration comes from environment variables (see {@link createACPProviderFromEnv}),
- * with optional overrides passed via `options`.
+ * Configuration is resolved **first from `options`**, then from the
+ * corresponding environment variable as fallback.
  *
  * @example
  * ```jsonc
@@ -310,7 +394,11 @@ export interface ACPModelProvider {
  *     "acp": {
  *       "npm": "acp-model-provider",
  *       "name": "ACP Agent",
- *       "options": {},
+ *       "options": {
+ *         "command": "gemini",
+ *         "args": ["--experimental-acp"],
+ *         "persistSession": true
+ *       },
  *       "models": {
  *         "agent": {
  *           "id": "agent",
@@ -323,24 +411,15 @@ export interface ACPModelProvider {
  *   }
  * }
  * ```
- *
- * ```bash
- * # Required env var
- * export ACP_COMMAND=gemini
- * export ACP_ARGS='["--experimental-acp"]'
- * ```
  */
 export function createACPModelProvider(
   options: ACPModelProviderOptions = {},
 ): ACPModelProvider {
-  const provider = createACPProviderFromEnv({
-    overrides: mapOptionsToOverrides(options),
-    extraMcpServers: options.extraMcpServers,
-  });
-
+  const settings = resolveACPConfig(options);
+  const provider = createACPProvider(settings);
   const providerName = options.name ?? "acp-model";
 
-  const modelProvider: ACPModelProvider = {
+  return {
     specificationVersion: "v3" as const,
     provider: providerName,
 
@@ -364,34 +443,4 @@ export function createACPModelProvider(
       );
     },
   };
-
-  return modelProvider;
-}
-
-function mapOptionsToOverrides(
-  opts: ACPModelProviderOptions,
-): Partial<ACPEnvConfig> {
-  const overrides: Partial<ACPEnvConfig> = {};
-
-  if (opts.command) overrides.command = String(opts.command);
-  if (opts.args) {
-    overrides.args = Array.isArray(opts.args) ? JSON.stringify(opts.args) : opts.args;
-  }
-  if (opts.cwd) overrides.cwd = opts.cwd;
-  if (opts.mcpServers) {
-    overrides.mcpServers = JSON.stringify(opts.mcpServers);
-  }
-  if (opts.sessionDelayMs !== undefined) {
-    overrides.sessionDelayMs = String(opts.sessionDelayMs);
-  }
-  if (opts.authMethodId) overrides.authMethodId = opts.authMethodId;
-  if (opts.persistSession !== undefined) {
-    overrides.persistSession = opts.persistSession ? "true" : "false";
-  }
-  if (opts.existingSessionId) overrides.existingSessionId = opts.existingSessionId;
-  if (opts.env) {
-    overrides.env = typeof opts.env === "string" ? opts.env : JSON.stringify(opts.env);
-  }
-
-  return overrides;
 }
