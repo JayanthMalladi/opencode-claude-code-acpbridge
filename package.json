@@ -1,0 +1,44 @@
+{
+  "name": "acp-model-provider",
+  "version": "0.1.0",
+  "description": "Vercel AI SDK provider for ACP (Agent Client Protocol) agents, configurable via environment variables",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "ai-sdk",
+    "vercel",
+    "language-model",
+    "provider"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@ai-sdk/provider": "^3.0.0",
+    "@mcpc-tech/acp-ai-provider": "^0.3.0",
+    "ai": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "typescript": "^5.8.0"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": "^3.0.0",
+    "ai": "^6.0.0"
+  }
+}
