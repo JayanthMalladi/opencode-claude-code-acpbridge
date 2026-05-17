@@ -1,6 +1,7 @@
 import {
   createACPProvider,
   ACPProvider,
+  ACPLanguageModel,
   type ACPProviderSettings,
 } from "@mcpc-tech/acp-ai-provider";
 
@@ -237,4 +238,160 @@ export function createACPProviderFromEnv(
   };
 
   return createACPProvider(settings);
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode-compatible provider factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Options accepted by {@link createACPModelProvider}.
+ *
+ * This is the function that OpenCode discovers when it loads the package:
+ * it looks for an export starting with `create` and calls it with
+ * `{ name, ...options }` from the provider config.
+ *
+ * All fields are optional — they fall back to the corresponding environment
+ * variables (see {@link createACPProviderFromEnv}).
+ */
+export interface ACPModelProviderOptions {
+  /** Provider name (set by OpenCode from config). */
+  name?: string;
+
+  /** ACP agent command (env: `ACP_COMMAND`). */
+  command?: string;
+  /** Arguments array or JSON string (env: `ACP_ARGS`). */
+  args?: string | string[];
+  /** Working directory (env: `ACP_CWD`). */
+  cwd?: string;
+  /** MCP server configurations array or JSON string (env: `ACP_MCP_SERVERS`). */
+  mcpServers?: unknown[];
+  /** Session delay in ms (env: `ACP_SESSION_DELAY_MS`). */
+  sessionDelayMs?: number;
+  /** Auth method ID (env: `AUTH_METHOD_ID`). */
+  authMethodId?: string;
+  /** Persist session (env: `ACP_PERSIST_SESSION`). */
+  persistSession?: boolean;
+  /** Resume existing session by ID (env: `ACP_EXISTING_SESSION_ID`). */
+  existingSessionId?: string;
+  /** Extra env vars for the agent process — Record or JSON string (env: `ACP_ENV`). */
+  env?: Record<string, string> | string;
+
+  /** Extra MCP servers to append. */
+  extraMcpServers?: ACPProviderSettings["session"]["mcpServers"];
+}
+
+/**
+ * Lightweight wrapper that adapts an `ACPProvider` into the shape OpenCode
+ * expects when loading a custom AI SDK provider.
+ */
+export interface ACPModelProvider {
+  readonly specificationVersion: "v3";
+  readonly provider: string;
+  languageModel(modelId?: string): ACPLanguageModel;
+  chat(modelId?: string): ACPLanguageModel;
+  embeddingModel(): never;
+  imageModel(): never;
+}
+
+/**
+ * Create an ACP model provider for use with **OpenCode** (or any AI SDK consumer).
+ *
+ * **OpenCode auto‑discovers** this function because it starts with `create`.
+ *
+ * Configuration comes from environment variables (see {@link createACPProviderFromEnv}),
+ * with optional overrides passed via `options`.
+ *
+ * @example
+ * ```jsonc
+ * // opencode.json / config.json
+ * {
+ *   "provider": {
+ *     "acp": {
+ *       "npm": "acp-model-provider",
+ *       "name": "ACP Agent",
+ *       "options": {},
+ *       "models": {
+ *         "agent": {
+ *           "id": "agent",
+ *           "name": "ACP Agent",
+ *           "tool_call": true,
+ *           "reasoning": true
+ *         }
+ *       }
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * ```bash
+ * # Required env var
+ * export ACP_COMMAND=gemini
+ * export ACP_ARGS='["--experimental-acp"]'
+ * ```
+ */
+export function createACPModelProvider(
+  options: ACPModelProviderOptions = {},
+): ACPModelProvider {
+  const provider = createACPProviderFromEnv({
+    overrides: mapOptionsToOverrides(options),
+    extraMcpServers: options.extraMcpServers,
+  });
+
+  const providerName = options.name ?? "acp-model";
+
+  const modelProvider: ACPModelProvider = {
+    specificationVersion: "v3" as const,
+    provider: providerName,
+
+    languageModel(_modelId?: string): ACPLanguageModel {
+      return provider.languageModel();
+    },
+
+    chat(_modelId?: string): ACPLanguageModel {
+      return provider.languageModel();
+    },
+
+    embeddingModel(): never {
+      throw new Error(
+        `ACP model provider "${providerName}" does not support embedding models.`,
+      );
+    },
+
+    imageModel(): never {
+      throw new Error(
+        `ACP model provider "${providerName}" does not support image models.`,
+      );
+    },
+  };
+
+  return modelProvider;
+}
+
+function mapOptionsToOverrides(
+  opts: ACPModelProviderOptions,
+): Partial<ACPEnvConfig> {
+  const overrides: Partial<ACPEnvConfig> = {};
+
+  if (opts.command) overrides.command = String(opts.command);
+  if (opts.args) {
+    overrides.args = Array.isArray(opts.args) ? JSON.stringify(opts.args) : opts.args;
+  }
+  if (opts.cwd) overrides.cwd = opts.cwd;
+  if (opts.mcpServers) {
+    overrides.mcpServers = JSON.stringify(opts.mcpServers);
+  }
+  if (opts.sessionDelayMs !== undefined) {
+    overrides.sessionDelayMs = String(opts.sessionDelayMs);
+  }
+  if (opts.authMethodId) overrides.authMethodId = opts.authMethodId;
+  if (opts.persistSession !== undefined) {
+    overrides.persistSession = opts.persistSession ? "true" : "false";
+  }
+  if (opts.existingSessionId) overrides.existingSessionId = opts.existingSessionId;
+  if (opts.env) {
+    overrides.env = typeof opts.env === "string" ? opts.env : JSON.stringify(opts.env);
+  }
+
+  return overrides;
 }
