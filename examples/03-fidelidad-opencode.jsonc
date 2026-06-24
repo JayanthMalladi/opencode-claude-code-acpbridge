@@ -1,0 +1,20 @@
+{
+  // Caso: quieres que el agente SIGA el system prompt y los agentes de OpenCode
+  // (p. ej. tu agente "build" con tus instrucciones), no que actúe como Claude
+  // Code nativo.
+  //
+  // ⚠️ COSTE: reenviar el system de OpenCode hace que Anthropic clasifique la
+  // sesión como app de terceros → se factura como EXTRA USAGE (de pago), no
+  // contra tu suscripción. Úsalo solo si lo aceptas.
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-claude-code-acpbridge", {
+      "command": "claude-agent-acp",
+      "claudeCode": {
+        "systemPromptMode": "append"   // "append" (preset+OpenCode) o "replace" (solo OpenCode)
+      }
+    }]
+  ]
+  // Con esto, cualquier agente de OpenCode usando un modelo acp/* respeta su
+  // propio system. Para volver a la suscripción, quita systemPromptMode (default "preset").
+}

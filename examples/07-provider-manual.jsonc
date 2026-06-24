@@ -1,0 +1,38 @@
+{
+  // Control total: declaras el provider `acp` a mano (sin auto-registro). El
+  // plugin RESPETA un `provider.acp` ya declarado y no lo toca. Útil para fijar
+  // exactamente los modelos, costes y límites, o en entornos sin descubrimiento.
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "acp": {
+      "npm": "opencode-claude-code-acpbridge",            // en dev: "file:///ruta/a/opencode-claude-code-acpbridge"
+      "name": "Claude Code (ACP)",
+      "options": {
+        "command": "claude-agent-acp",
+        "claudeExecutable": "/home/usuario/.local/bin/claude",
+        "claudeCode": { "systemPromptMode": "preset" }
+      },
+      "models": {
+        "default": {
+          "id": "default", "name": "Opus 4.7 (recommended)",
+          "tool_call": true, "reasoning": true, "attachment": true,
+          "limit": { "context": 1000000, "output": 64000 },
+          "cost": { "input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25 },
+          "variants": { "low": {"effort":"low"}, "high": {"effort":"high"}, "max": {"effort":"max"} }
+        },
+        "sonnet": {
+          "id": "sonnet", "name": "Sonnet 4.6",
+          "tool_call": true, "reasoning": true, "attachment": true,
+          "limit": { "context": 1000000, "output": 64000 },
+          "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
+        },
+        "haiku": { "id": "haiku", "name": "Haiku 4.5", "tool_call": true, "reasoning": true }
+      }
+    }
+  },
+  // El plugin se sigue cargando para inyectar los agentes y el hook chat.params
+  // (resume); como provider.acp ya existe, no lo reescribe.
+  "plugin": [
+    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
+  ]
+}

@@ -1,7 +1,7 @@
 {
-  "name": "acp-model-provider",
-  "version": "0.1.0",
-  "description": "Vercel AI SDK provider for ACP (Agent Client Protocol) agents, configurable via environment variables",
+  "name": "opencode-claude-code-acpbridge",
+  "version": "0.6.0",
+  "description": "Use Claude Code inside OpenCode. An OpenCode plugin + model provider that bridges Claude Code over ACP (Agent Client Protocol): run it on your Claude subscription while OpenCode orchestrates the tools, permissions and TUI.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,26 +12,37 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "opencode-claude-code-acpbridge": "./dist/bin/cli.js"
+  },
   "files": [
-    "dist"
+    "dist",
+    "docs",
+    "examples"
   ],
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "claude-code",
+    "claude",
+    "anthropic",
     "acp",
     "agent-client-protocol",
     "ai-sdk",
-    "vercel",
     "language-model",
     "provider"
   ],
   "license": "MIT",
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.14.1",
     "@mcpc-tech/acp-ai-provider": "^0.3.0"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "^1.17.9",
     "@types/node": "^25.8.0",
     "typescript": "^5.8.0"
   },

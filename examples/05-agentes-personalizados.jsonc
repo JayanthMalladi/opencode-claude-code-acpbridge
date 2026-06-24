@@ -1,0 +1,19 @@
+{
+  // Definir TUS propios agentes inyectados (por modelo, por modo), reemplazando
+  // los de serie. `options.mode` es el modo ACP; `variant` el esfuerzo.
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-claude-code-acpbridge", {
+      "command": "claude-agent-acp",
+      // Esta lista REEMPLAZA los agentes por defecto (claude-code / claude-code-plan).
+      // Usa "agents": false para no inyectar ninguno y declararlos todos a mano.
+      "agents": {
+        "cc-opus":   { "model": "default", "variant": "high", "options": { "mode": "bypassPermissions" } },
+        "cc-sonnet": { "model": "sonnet",  "options": { "mode": "bypassPermissions" } },
+        "cc-plan":   { "model": "default", "variant": "high", "options": { "mode": "plan" } }
+      }
+    }]
+  ]
+  // Recuerda: aun así, lo que declares en la sección `agent` de este mismo
+  // fichero gana sobre estas opciones (merge). Ej.: añadir `permission` a "cc-opus".
+}

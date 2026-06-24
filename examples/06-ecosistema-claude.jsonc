@@ -1,0 +1,23 @@
+{
+  // Caso avanzado: en lugar del "cerebro limpio", quieres que el agente herede
+  // TU Claude Code real — skills, subagents, hooks y MCP servers de ~/.claude.
+  //
+  // ⚠️ Implicaciones:
+  //  - configDir:false hace que el agente use tu ~/.claude (con su auth y ecosistema).
+  //  - settingSources carga settings (hooks/agents) de user/project/local.
+  //  - Si esos hooks/agents añaden un system propio agresivo, puede dispararse
+  //    EXTRA USAGE (igual que con append/replace). Vigila con ACP_DEBUG.
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-claude-code-acpbridge", {
+      "command": "claude-agent-acp",
+      "claudeCode": {
+        "configDir": false,                       // hereda ~/.claude (en vez de "isolated")
+        "settingSources": ["user", "project"],    // carga settings (hooks/agents/skills)
+        "tools": ["read", "grep", "glob"]          // habilita algunas tools NATIVAS de Claude
+        // OJO: habilitar tools nativas mezcla dos ejecutores (Claude + OpenCode).
+        // Para "OpenCode orquesta" puro, deja tools en [] (el default).
+      }
+    }]
+  ]
+}

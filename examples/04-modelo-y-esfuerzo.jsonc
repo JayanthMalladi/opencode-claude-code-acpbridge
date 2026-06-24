@@ -1,0 +1,30 @@
+{
+  // Fijar modelo y esfuerzo de razonamiento.
+  //
+  // El esfuerzo (effort) es una VARIANTE del modelo: en la TUI eliges
+  // p. ej. "acp/opus:max" o "acp/haiku:low". Aquí mostramos cómo fijarlo
+  // por agente (variant) y/o globalmente en el provider (claudeCode).
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-claude-code-acpbridge", {
+      "command": "claude-agent-acp",
+      "claudeCode": {
+        // Por defecto para cualquier uso del provider (si no lo fija el agente):
+        "effort": "high",
+        "thinking": { "type": "enabled", "budgetTokens": 16000 }
+      }
+    }]
+  ],
+  "agent": {
+    // Máxima calidad: Opus con esfuerzo máximo.
+    "claude-code": { "model": "acp/default", "variant": "max" },
+    // Rápido/barato para tareas ligeras: Haiku con esfuerzo bajo.
+    "claude-code-fast": {
+      "description": "Claude Code rápido (Haiku, esfuerzo bajo)",
+      "model": "acp/haiku",
+      "variant": "low",
+      "mode": "primary",
+      "options": { "mode": "bypassPermissions" }
+    }
+  }
+}

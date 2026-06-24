@@ -1,0 +1,29 @@
+{
+  // Filtrar/controlar las herramientas del agente vía PERMISOS de OpenCode,
+  // sin tocar el código del plugin. Tu sección `agent` tiene precedencia (merge):
+  // declaras solo `permission` y heredas model/mode/options del plugin.
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
+  ],
+  "agent": {
+    "claude-code": {
+      // Read-only "duro": deniega escritura y shell, permite lectura/búsqueda/web.
+      "permission": {
+        "edit": "deny",
+        "write": "deny",
+        "bash": "deny",
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "webfetch": "allow"
+      }
+    },
+    "claude-code-plan": {
+      // El agente de plan: pedir confirmación para todo lo demás.
+      "permission": { "edit": "deny", "bash": "ask" }
+    }
+  }
+  // Nota: las tools se ejecutan en OpenCode; estos permisos son la forma
+  // recomendada de acotarlas.
+}
