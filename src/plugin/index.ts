@@ -63,17 +63,21 @@ const claudePermissionTool = tool({
     input: tool.schema.any().optional().describe("the native tool input"),
   },
   async execute(args, ctx) {
-    const label = String(args.tool ?? args.title ?? "native tool");
-    // ctx.ask surfaces OpenCode's permission prompt; default action is "ask" when
-    // no rule matches. Throws PermissionRejectedError if the user rejects → the
-    // provider sees an error tool-result and denies the native tool.
+    // Use the NATIVE tool name as the permission so the prompt reads "Call tool
+    // Skill / NotebookEdit / …" (not the generic claude_permission) and "Allow
+    // always" remembers PER native tool. Configure in opencode.json, e.g.
+    // `permission: { Skill: "allow", "*": "ask" }` on the agent.
+    const native = String(args.tool ?? args.title ?? "native tool");
+    // ctx.ask surfaces OpenCode's permission prompt (default action "ask" when no
+    // rule matches). Throws PermissionRejectedError on reject → the provider sees
+    // an error tool-result and denies the native tool.
     await ctx.ask({
-      permission: "claude_permission",
-      patterns: [label],
-      always: [label],
-      metadata: { tool: args.tool, kind: args.kind, title: args.title, input: args.input },
+      permission: native,
+      patterns: ["*"],
+      always: ["*"],
+      metadata: { kind: args.kind, title: args.title, input: args.input },
     });
-    return `approved: ${label}`;
+    return `approved: ${native}`;
   },
 });
 
@@ -164,8 +168,11 @@ export const ACPPlugin: Plugin = async (_input, options) => {
             "claude-code": {
               description: "Claude Code (subscription) — native capabilities with permissions bridged to OpenCode",
               model: defaultModel,
-              // Native tool permissions surface through OpenCode's `ask` via the bridge.
-              permission: { claude_permission: "ask" },
+              // The bridge meta-tool itself is auto-allowed; the REAL prompt is raised
+              // inside it via ctx.ask under the NATIVE tool's name (Skill/NotebookEdit/…),
+              // so users see and rule on the actual action. Override per tool, e.g.
+              // `permission: { Skill: "allow", NotebookEdit: "ask" }`.
+              permission: { claude_permission: "allow" },
               options: {
                 mode: "default",                 // not bypass → the agent asks → permission bridge
                 allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
