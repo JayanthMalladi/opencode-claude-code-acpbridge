@@ -140,6 +140,13 @@ Por defecto el agente arranca aislado (sin tus skills/hooks/agents/MCP). Puedes 
 | `tools` | `string[]` | `[]` | Herramientas **nativas** del agente a habilitar. `[]` = ninguna. |
 | `disallowedTools` | `string[]` | — | Herramientas nativas a prohibir. |
 | `strictMcpConfig` | `boolean` | **`true`** | Usa **solo** el host de tools de OpenCode e ignora todo lo demás: el `.claude.json` y los **connectors de tu cuenta claude.ai** (Gmail, Drive, Supabase, Notion…). `false` para dejar pasar esos connectors. |
+| `allowedTools` | `string[]` | — | Tools auto-aprobadas (sin `requestPermission`). Con el **puente de permisos** activo se usa `["mcp__opencode"]` para que las tools de OpenCode no pidan doble permiso (ver "Puente de permisos"). |
+| `nativeTools` | `string[]` | — | Tools **nativas** de Claude que OpenCode no cubre (p. ej. `["NotebookEdit"]`). Se añaden a `tools`. |
+| `resourceSearch` | `boolean` | — | Habilita `ListMcpResources`/`ReadMcpResource` (búsqueda de recursos MCP, superior a OpenCode). |
+| `nativeSubagents` | `boolean \| Record` | — | Subagentes nativos (`Task`). `true` añade un subagente "general" que **delega la ejecución a OpenCode**; un `Record` define subagentes a medida. |
+| `nativeSkills` | `boolean \| string[]` | — | Skills de Claude Code. `string[]` precarga solo esos (`settings.skills`, menor riesgo billing); `true` carga `~/.claude/skills` (`settingSources:"user"`, mayor riesgo). Añade la tool `Skill`. |
+| `projectMemory` | `boolean` | — | Carga `CLAUDE.md`/`AGENTS.md` del proyecto (`settingSources:"project"`). Convive con plugins de memoria de OpenCode (hindsight). |
+| `skillShell` | `boolean` | `false` | Permite que los skills ejecuten shell con la `Bash` nativa. Por defecto orquestan vía las tools de OpenCode. |
 | `agents`, `hooks`, `mcpServers`, `plugins`, `systemPrompt` | — | — | Inyectar subagents/hooks/MCP/plugins propios o un system prompt avanzado. |
 | `options` | `Record<string,unknown>` | — | Passthrough libre a `_meta.claudeCode.options` (cualquier campo del SDK). |
 

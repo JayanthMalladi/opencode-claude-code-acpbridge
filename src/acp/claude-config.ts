@@ -40,6 +40,27 @@ export interface ClaudeCodeControl {
    * account's connectors as extra tools. Set `false` to let those connectors through.
    */
   strictMcpConfig?: boolean;
+  /** Auto-approved tools (no `requestPermission`). With the permission bridge on
+   *  (mode ≠ bypassPermissions) set `["mcp__opencode"]` so OpenCode's own tools
+   *  don't double-prompt — only NATIVE tools get bridged to OpenCode's `ask`. */
+  allowedTools?: string[];
+
+  // ---- native Claude Code ecosystem (composes tools/settingSources/agents) ----
+  /** Native tools OpenCode doesn't cover (gap), e.g. `["NotebookEdit"]`. Added to `tools`. */
+  nativeTools?: string[];
+  /** MCP resource search (`ListMcpResources`, `ReadMcpResource`) — superior to OpenCode. */
+  resourceSearch?: boolean;
+  /** Native subagents (`Task`): `true` adds a general subagent that delegates to
+   *  OpenCode's tools; a `Record` provides custom AgentDefinitions (merged into `agents`). */
+  nativeSubagents?: boolean | Record<string, unknown>;
+  /** Claude Code skills: `true` loads `~/.claude/skills` (settingSources "user", higher
+   *  billing risk); `string[]` preloads only those (settings.skills, safer). Adds `Skill`. */
+  nativeSkills?: boolean | string[];
+  /** Project memory: load CLAUDE.md/AGENTS.md of the cwd (settingSources "project"). */
+  projectMemory?: boolean;
+  /** Let skills run shell via the native Bash tool (default off → they orchestrate
+   *  through OpenCode's tools instead). */
+  skillShell?: boolean;
 
   // ---- model & reasoning ----
   /** Model alias or id: `"opus"`/`"sonnet"`/`"haiku"`/`"opus[1m]"` or `"claude-opus-4-7"`, … */
@@ -125,16 +146,57 @@ export function resolveConfigDir(ctrl: ClaudeCodeControl): string | undefined {
   return prepareIsolatedConfigDir();
 }
 
-/** Build `_meta.claudeCode.options` ("clean brain" defaults + model/reasoning params). */
+/** General subagent that completes a delegated task using the AVAILABLE tools
+ *  (OpenCode's, inherited from the parent) — keeps subagent work orchestrated and
+ *  permission-bridged instead of assuming native shell/file access. */
+const DEFAULT_SUBAGENT = {
+  description: "General subagent that completes a delegated task using the available tools",
+  prompt:
+    "You are a focused subagent. Use the tools available to you to complete the delegated task. " +
+    "Tool execution is orchestrated by OpenCode and may prompt the user for permission — do not assume " +
+    "unrestricted native shell or file access.",
+};
+
+/** Build `_meta.claudeCode.options`: "clean brain" by default, plus any reactivated
+ *  native features (skills/subagents/resource-search/memory/tools) composed in. A
+ *  raw override (ctrl.tools / ctrl.settingSources) still wins; with every toggle off
+ *  the result is the unchanged clean brain (`{tools:[], settingSources:[]}`). */
 export function buildClaudeCodeOptions(ctrl: ClaudeCodeControl): Record<string, unknown> {
+  const toolSet = new Set<string>(ctrl.nativeTools ?? []);
+  const sourceSet = new Set<"user" | "project" | "local">();
+  let settings: Record<string, unknown> | undefined;
+  let agents = ctrl.agents ? { ...ctrl.agents } : undefined;
+
+  if (ctrl.resourceSearch) { toolSet.add("ListMcpResources"); toolSet.add("ReadMcpResource"); }
+  if (ctrl.nativeSubagents) {
+    toolSet.add("Task");
+    agents = ctrl.nativeSubagents === true
+      ? { ...(agents ?? {}), general: DEFAULT_SUBAGENT }
+      : { ...(agents ?? {}), ...(ctrl.nativeSubagents as Record<string, unknown>) };
+  }
+  if (ctrl.nativeSkills) {
+    toolSet.add("Skill");
+    if (ctrl.skillShell) toolSet.add("Bash"); // shell skills need the native Bash tool
+    if (Array.isArray(ctrl.nativeSkills)) {
+      settings = { ...(settings ?? {}), skills: ctrl.nativeSkills }; // preload only these
+    } else {
+      // Load ~/.claude/skills (and agents) but DISABLE the user's hooks — keeps the
+      // skills' power without letting arbitrary lifecycle hooks "break" anything.
+      sourceSet.add("user");
+      settings = { ...(settings ?? {}), disableAllHooks: true };
+    }
+  }
+  if (ctrl.projectMemory) sourceSet.add("project");
+
   const o: Record<string, unknown> = {
-    tools: ctrl.tools ?? [],
-    settingSources: ctrl.settingSources ?? [],
+    tools: ctrl.tools ?? [...toolSet],
+    settingSources: ctrl.settingSources ?? [...sourceSet],
     // Clean brain: ignore the account's claude.ai connectors and any .claude.json
     // MCP servers — only OpenCode's tool host (passed via mcpServers) gets through.
     strictMcpConfig: ctrl.strictMcpConfig ?? true,
   };
   const set = (k: string, v: unknown) => { if (v !== undefined) o[k] = v; };
+  set("allowedTools", ctrl.allowedTools);
   set("disallowedTools", ctrl.disallowedTools);
   set("model", ctrl.model);
   set("fallbackModel", ctrl.fallbackModel);
@@ -147,7 +209,8 @@ export function buildClaudeCodeOptions(ctrl: ClaudeCodeControl): Record<string, 
   set("maxBudgetUsd", ctrl.maxBudgetUsd);
   set("permissionMode", ctrl.permissionMode);
   set("systemPrompt", ctrl.systemPrompt);
-  set("agents", ctrl.agents);
+  set("agents", agents);
+  if (settings) set("settings", settings);
   set("hooks", ctrl.hooks);
   set("mcpServers", ctrl.mcpServers);
   set("plugins", ctrl.plugins);

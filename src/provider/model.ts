@@ -466,10 +466,14 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     const ctrl: ClaudeCodeControl = { ...(this.config.claudeCode ?? {}) };
     const po = (options.providerOptions as any)?.[this.provider];
     if (po && typeof po === "object") {
-      if (po.mode) ctrl.mode = po.mode;
-      if (po.effort) ctrl.effort = po.effort;
-      if (po.thinking) ctrl.thinking = po.thinking;
-      if (po.systemPromptMode) ctrl.systemPromptMode = po.systemPromptMode;
+      // Per-agent overrides from `agent.<name>.options` (→ providerOptions.acp):
+      // mode/effort/reasoning plus the native-feature toggles.
+      const KEYS = [
+        "mode", "effort", "thinking", "systemPromptMode",
+        "tools", "allowedTools", "disallowedTools", "settingSources", "strictMcpConfig",
+        "nativeTools", "resourceSearch", "nativeSubagents", "nativeSkills", "projectMemory", "skillShell",
+      ] as const;
+      for (const k of KEYS) if (po[k] !== undefined) (ctrl as any)[k] = po[k];
     }
     // OpenCode's modelId maps to Claude's model unless claudeCode.model overrides it.
     if (!ctrl.model && this.modelId && this.modelId !== "claude-code") ctrl.model = this.modelId;
