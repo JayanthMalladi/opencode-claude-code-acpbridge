@@ -67,6 +67,10 @@ interface TurnState {
   ocSession?: string;
   controller: StreamController | null;
   pendingTools: Set<string>;
+  /** Permission bridge: claude_permission toolCallId → resolver of the deferred
+   *  ACP requestPermission. The agent waits on the Promise while OpenCode shows
+   *  its `ask` prompt; the tool-result (approved / error) resolves it. */
+  pendingPermissions: Map<string, (approved: boolean) => void>;
   textId: string | null;
   reasoningId: string | null;
 }
@@ -164,19 +168,29 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   private async onStart(
     controller: StreamController,
     options: LanguageModelV3CallOptions,
-    continuation: Array<{ toolCallId: string; result: unknown }> | null,
+    continuation: Array<{ toolCallId: string; result: unknown; output: any }> | null,
   ) {
     try {
       controller.enqueue({ type: "stream-start", warnings: [] });
 
-      // (1) Continuation of a deferred tool-call — resume the same agent turn.
+      // (1) Continuation of a deferred tool-call OR a bridged permission — resume
+      // the same agent turn.
       if (continuation && this.current) {
-        this.current.controller = controller;
-        this.current.textId = null;
-        this.current.reasoningId = null;
-        for (const { toolCallId, result } of continuation) {
-          this.current.pendingTools.delete(toolCallId);
-          this.current.host.resolveToolCall(toolCallId, result);
+        const t = this.current;
+        t.controller = controller;
+        t.textId = null;
+        t.reasoningId = null;
+        for (const { toolCallId, result, output } of continuation) {
+          const permResolve = t.pendingPermissions.get(toolCallId);
+          if (permResolve) {
+            // Permission bridge: OpenCode's `ask` verdict came back as the
+            // claude_permission tool-result → resolve the deferred requestPermission.
+            t.pendingPermissions.delete(toolCallId);
+            permResolve(!this.isErrorOutput(output));
+          } else {
+            t.pendingTools.delete(toolCallId);
+            t.host.resolveToolCall(toolCallId, result);
+          }
         }
         return;
       }
@@ -294,6 +308,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         lastUsage: replayFull ? undefined : po.resumeLastUsage,
         controller,
         pendingTools: new Set(),
+        pendingPermissions: new Map(),
         textId: null,
         reasoningId: null,
       };
@@ -355,6 +370,60 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     t.controller.enqueue({ type: "finish", usage: emptyUsage(), finishReason: { unified: "tool-calls", raw: "tool_use" } });
     try { t.controller.close(); } catch { /* ignore */ }
     t.controller = null; // DO NOT resolve yet — wait for the continuation doStream
+  }
+
+  // ---- permission bridge -----------------------------------------------------
+
+  /** Map approve/reject to one of the options the agent offered (by kind/optionId). */
+  private permOutcome(params: any, approved: boolean): { outcome: any } {
+    const opts: any[] = params?.options ?? [];
+    const want = approved
+      ? (o: any) => o.kind === "allow_once" || o.kind === "allow_always" || o.optionId === "allow"
+      : (o: any) => o.kind === "reject_once" || o.kind === "reject_always" || o.optionId === "reject";
+    const opt = opts.find(want) ?? (approved ? opts[0] : undefined);
+    if (!opt) return { outcome: { outcome: "cancelled" } };
+    return { outcome: { outcome: "selected", optionId: opt.optionId } };
+  }
+
+  /** Human label of the tool the agent wants permission for (title/kind). */
+  private permToolName(toolCall: any): string {
+    return toolCall?.title ?? toolCall?.kind ?? "tool";
+  }
+
+  /** ACP requestPermission → OpenCode `ask`, via the claude_permission meta-tool.
+   *  Deferred: returns a Promise the agent awaits until OpenCode's verdict comes
+   *  back as the meta-tool's result (resolved in onStart's continuation branch). */
+  private onRequestPermission(params: any): Promise<{ outcome: any }> {
+    const t = this.current;
+    // No live turn/controller → approve so the agent never hangs.
+    if (!t || !t.controller) return Promise.resolve(this.permOutcome(params, true));
+    const callId = `perm_${++this.idSeq}`;
+    dbg(`requestPermission(${this.permToolName(params?.toolCall)}) → bridge as claude_permission (${callId})`);
+    return new Promise<{ outcome: any }>((resolve) => {
+      t.pendingPermissions.set(callId, (approved: boolean) => resolve(this.permOutcome(params, approved)));
+      this.emitPermissionCall(t, callId, params?.toolCall);
+    });
+  }
+
+  /** Emit a claude_permission tool-call to OpenCode (same deferred pattern as a
+   *  real tool-call): OpenCode applies its `ask` permission and returns the
+   *  verdict as the tool-result on the next doStream. */
+  private emitPermissionCall(t: TurnState, callId: string, toolCall: any) {
+    if (!t.controller) return;
+    this.closeBlocks(t);
+    const input = JSON.stringify({
+      tool: this.permToolName(toolCall),
+      kind: toolCall?.kind,
+      title: toolCall?.title,
+      input: toolCall?.rawInput,
+    });
+    t.controller.enqueue({ type: "tool-input-start", id: callId, toolName: "claude_permission" });
+    t.controller.enqueue({ type: "tool-input-delta", id: callId, delta: input });
+    t.controller.enqueue({ type: "tool-input-end", id: callId });
+    t.controller.enqueue({ type: "tool-call", toolCallId: callId, toolName: "claude_permission", input });
+    t.controller.enqueue({ type: "finish", usage: emptyUsage(), finishReason: { unified: "tool-calls", raw: "tool_use" } });
+    try { t.controller.close(); } catch { /* ignore */ }
+    t.controller = null;
   }
 
   /** Fired by the ACP client on session/update. */
@@ -474,8 +543,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       () => ({
         async sessionUpdate(params: any) { self.onSessionUpdate(params.update); },
         async requestPermission(params: any) {
-          const opt = params.options?.find((o: any) => o.optionId === "allow" || o.kind === "allow_once") ?? params.options?.[0];
-          return { outcome: { outcome: "selected", optionId: opt?.optionId ?? "allow" } };
+          return self.onRequestPermission(params);
         },
         async writeTextFile() { return {}; },
         async readTextFile() { return { content: "" }; },
@@ -615,18 +683,26 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
 
   private detectContinuation(
     prompt: LanguageModelV3CallOptions["prompt"],
-  ): Array<{ toolCallId: string; result: unknown }> | null {
-    if (!this.current || this.current.pendingTools.size === 0) return null;
-    const results: Array<{ toolCallId: string; result: unknown }> = [];
+  ): Array<{ toolCallId: string; result: unknown; output: any }> | null {
+    const t = this.current;
+    if (!t || (t.pendingTools.size === 0 && t.pendingPermissions.size === 0)) return null;
+    const results: Array<{ toolCallId: string; result: unknown; output: any }> = [];
     for (const msg of prompt) {
       if (msg.role !== "tool" && msg.role !== "assistant") continue;
       for (const part of (msg as any).content as any[]) {
-        if (part?.type === "tool-result" && this.current.pendingTools.has(part.toolCallId)) {
-          results.push({ toolCallId: part.toolCallId, result: this.toMcpResult(part.output) });
+        if (part?.type === "tool-result" && (t.pendingTools.has(part.toolCallId) || t.pendingPermissions.has(part.toolCallId))) {
+          results.push({ toolCallId: part.toolCallId, result: this.toMcpResult(part.output), output: part.output });
         }
       }
     }
     return results.length ? results : null;
+  }
+
+  /** A tool-result is an error/denial when its output type is error-* (OpenCode
+   *  RejectedError) — used by the permission bridge to map approve vs reject. */
+  private isErrorOutput(output: any): boolean {
+    const ty = output?.type;
+    return ty === "error-text" || ty === "error-json" || ty === "error";
   }
 
   private outputToText(output: any): string {
