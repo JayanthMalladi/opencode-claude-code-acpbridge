@@ -63,18 +63,25 @@ const claudePermissionTool = tool({
     input: tool.schema.any().optional().describe("the native tool input"),
   },
   async execute(args, ctx) {
-    // Use the NATIVE tool name as the permission so the prompt reads "Call tool
-    // Skill / NotebookEdit / …" (not the generic claude_permission) and "Allow
-    // always" remembers PER native tool. Configure in opencode.json, e.g.
-    // `permission: { Skill: "allow", "*": "ask" }` on the agent.
+    // Permission = the NATIVE tool name → the prompt reads "Call tool Skill /
+    // NotebookEdit / Bash …" and rules/"Allow always" are PER native tool.
     const native = String(args.tool ?? args.title ?? "native tool");
-    // ctx.ask surfaces OpenCode's permission prompt (default action "ask" when no
-    // rule matches). Throws PermissionRejectedError on reject → the provider sees
-    // an error tool-result and denies the native tool.
+    // Pattern = the action target (command / skill / path) so GLOB rules match,
+    // e.g. `permission: { Bash: { "git *": "allow" }, Skill: { "review*": "allow" }, "*": "ask" }`.
+    const inp: any = args.input && typeof args.input === "object" ? args.input : {};
+    const target = String(
+      (inp.command ?? inp.skill ?? inp.name ?? inp.notebook_path ?? inp.file_path ?? inp.path) ||
+      (typeof args.input === "string" ? args.input : "") || args.title || "*",
+    );
+    // "Allow always" remembers a glob: for shell-like targets the first token + " *"
+    // (e.g. `git status` → `git *`), otherwise the exact target.
+    const always = target.includes(" ") ? `${target.split(" ")[0]} *` : target;
+    // ctx.ask surfaces OpenCode's prompt (default "ask" when no rule matches); throws
+    // PermissionRejectedError on reject → the provider denies the native tool.
     await ctx.ask({
       permission: native,
-      patterns: ["*"],
-      always: ["*"],
+      patterns: [target],
+      always: [always],
       metadata: { kind: args.kind, title: args.title, input: args.input },
     });
     return `approved: ${native}`;
@@ -178,11 +185,11 @@ export const ACPPlugin: Plugin = async (_input, options) => {
                 allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
                 // Common native tools are covered by OpenCode → disable them so the agent
                 // doesn't try (and "approve") a native Bash/Write/… it can't actually run;
-                // it uses mcp__opencode__* instead. Native gap tools stay (see `tools`).
-                disallowedTools: ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"],
+                // it uses mcp__opencode__* instead. Native gap tools stay (see `nativeTools`).
+                disallowedTools: ["Bash", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"],
                 resourceSearch: true,            // ListMcpResources / ReadMcpResource (superior to OpenCode)
                 nativeSubagents: true,           // Task: native subagents that delegate to OpenCode's tools
-                nativeTools: ["NotebookEdit"],   // gap OpenCode doesn't cover
+                nativeTools: ["NotebookEdit", "Read"], // gap OpenCode doesn't cover + native Read (multimodal)
                 projectMemory: true,             // CLAUDE.md/AGENTS.md (verified: keeps subscription)
                 nativeSkills: true,              // ~/.claude/skills, hooks disabled (verified: keeps subscription)
               },
