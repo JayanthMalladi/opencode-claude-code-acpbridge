@@ -169,6 +169,10 @@ export const ACPPlugin: Plugin = async (_input, options) => {
               options: {
                 mode: "default",                 // not bypass → the agent asks → permission bridge
                 allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
+                // Common native tools are covered by OpenCode → disable them so the agent
+                // doesn't try (and "approve") a native Bash/Write/… it can't actually run;
+                // it uses mcp__opencode__* instead. Native gap tools stay (see `tools`).
+                disallowedTools: ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"],
                 resourceSearch: true,            // ListMcpResources / ReadMcpResource (superior to OpenCode)
                 nativeSubagents: true,           // Task: native subagents that delegate to OpenCode's tools
                 nativeTools: ["NotebookEdit"],   // gap OpenCode doesn't cover

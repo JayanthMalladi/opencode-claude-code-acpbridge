@@ -563,6 +563,16 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   }
 
   private onCancel() {
+    // A stream cancel WHILE a tool-call or permission is deferred is OpenCode
+    // PAUSING (e.g. to show a permission prompt), not a real abort — tearing the
+    // host down here kills the pending tools/call with "host closed". Keep the
+    // session/host alive; the continuation doStream resolves them. A later turn
+    // (or cleanup) tears things down cleanly.
+    const t = this.current;
+    if (t && (t.pendingTools.size > 0 || t.pendingPermissions.size > 0)) {
+      dbg("onCancel ignored — deferred tool-call/permission in flight (likely a permission pause)");
+      return;
+    }
     this.endTurn();
   }
 
@@ -580,6 +590,10 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     if (!tools) return [];
     const out: McpToolDef[] = [];
     for (const t of tools) {
+      // Skip the permission-bridge meta-tool: the provider emits `claude_permission`
+      // itself and OpenCode runs it via the plugin, so the AGENT must NOT see it
+      // (otherwise it surfaces as mcp__opencode__claude_permission and confuses it).
+      if ((t as any).name === "claude_permission") continue;
       if ((t as any).type === "function") {
         out.push({
           name: (t as any).name,
