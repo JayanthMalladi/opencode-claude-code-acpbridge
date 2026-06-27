@@ -127,6 +127,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   private current: TurnState | null = null;
   private idSeq = 0;
   private promptCaps: Record<string, boolean> = {};
+  private cancelWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly config: ACPModelConfig) {
     this.modelId = config.modelId ?? "claude-code";
@@ -177,6 +178,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       // the same agent turn.
       if (continuation && this.current) {
         const t = this.current;
+        this.clearCancelWatchdog(); // the turn DID continue — disarm the abort timer
         t.controller = controller;
         t.textId = null;
         t.reasoningId = null;
@@ -186,7 +188,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
             // Permission bridge: OpenCode's `ask` verdict came back as the
             // claude_permission tool-result → resolve the deferred requestPermission.
             t.pendingPermissions.delete(toolCallId);
-            permResolve(!this.isErrorOutput(output));
+            permResolve(this.isApprovedOutput(output));
           } else {
             t.pendingTools.delete(toolCallId);
             t.host.resolveToolCall(toolCallId, result);
@@ -224,6 +226,11 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         this.current.cfgKey === cfgKey
       ) {
         dbg(`reuse session ${this.current.sessionId} — delta only (cache-friendly)`);
+        // A fresh user turn: drop any deferred state left by a prior turn that was
+        // abandoned (continuation never arrived) so it can't hang or leak.
+        this.clearCancelWatchdog();
+        this.drainPermissions(this.current);
+        this.current.pendingTools.clear();
         this.current.controller = controller;
         this.current.textId = null;
         this.current.reasoningId = null;
@@ -385,9 +392,13 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     return { outcome: { outcome: "selected", optionId: opt.optionId } };
   }
 
-  /** Human label of the tool the agent wants permission for (title/kind). */
+  /** Tool name the agent wants permission for. The ACP toolCall carries NO bare
+   *  name — `title` is a human label like "Read /path", "Write /path", "Skill" — so
+   *  we take the first token. This becomes the permission key, so per-tool rules
+   *  (`permission: { Read: … }`) match. The full title travels separately as metadata. */
   private permToolName(toolCall: any): string {
-    return toolCall?.title ?? toolCall?.kind ?? "tool";
+    const title = String(toolCall?.title ?? "").trim();
+    return title.split(/\s+/)[0] || String(toolCall?.kind ?? "") || "tool";
   }
 
   /** ACP requestPermission → OpenCode `ask`, via the claude_permission meta-tool.
@@ -454,11 +465,22 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   }
 
   private endTurn() {
+    this.clearCancelWatchdog();
     const t = this.current;
     if (!t) return;
+    // Settle any deferred permission requests (deny/cancel) so the agent never
+    // stays blocked awaiting a verdict that will no longer arrive.
+    this.drainPermissions(t);
     try { if (this.connection && t.sessionId) this.connection.cancel?.({ sessionId: t.sessionId }); } catch { /* ignore */ }
     t.host.stop();
     this.current = null;
+  }
+
+  /** Resolve every outstanding bridged permission as denied so the agent unblocks. */
+  private drainPermissions(t: TurnState) {
+    if (t.pendingPermissions.size === 0) return;
+    for (const resolve of [...t.pendingPermissions.values()]) { try { resolve(false); } catch { /* ignore */ } }
+    t.pendingPermissions.clear();
   }
 
   /** Provider config overlaid with per-call `providerOptions.acp` (per-agent mode/effort/…). */
@@ -566,14 +588,31 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     // A stream cancel WHILE a tool-call or permission is deferred is OpenCode
     // PAUSING (e.g. to show a permission prompt), not a real abort — tearing the
     // host down here kills the pending tools/call with "host closed". Keep the
-    // session/host alive; the continuation doStream resolves them. A later turn
-    // (or cleanup) tears things down cleanly.
+    // session/host alive; the continuation doStream resolves them. A WATCHDOG
+    // guarantees teardown if the continuation never arrives (session truly aborted,
+    // prompt dropped) so the agent can't hang forever.
     const t = this.current;
     if (t && (t.pendingTools.size > 0 || t.pendingPermissions.size > 0)) {
       dbg("onCancel ignored — deferred tool-call/permission in flight (likely a permission pause)");
+      this.armCancelWatchdog();
       return;
     }
     this.endTurn();
+  }
+
+  /** If a cancel was ignored (deferred work in flight) but no continuation comes,
+   *  force teardown so the agent doesn't stay blocked. Cleared by a continuation. */
+  private armCancelWatchdog() {
+    this.clearCancelWatchdog();
+    this.cancelWatchdog = setTimeout(() => {
+      this.cancelWatchdog = null;
+      if (this.current) { dbg("cancel watchdog fired — no continuation arrived; tearing down"); this.endTurn(); }
+    }, this.config.streamCloseTimeoutMs ?? 600_000);
+    this.cancelWatchdog.unref?.();
+  }
+
+  private clearCancelWatchdog() {
+    if (this.cancelWatchdog) { clearTimeout(this.cancelWatchdog); this.cancelWatchdog = null; }
   }
 
   cleanup() {
@@ -721,6 +760,14 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   private isErrorOutput(output: any): boolean {
     const ty = output?.type;
     return ty === "error-text" || ty === "error-json" || ty === "error";
+  }
+
+  /** Approve a bridged permission ONLY on an explicit positive verdict (the
+   *  claude_permission meta-tool returns "approved: …"). Errors, denials, and any
+   *  ambiguous output fail CLOSED so an unclear verdict never runs the native tool. */
+  private isApprovedOutput(output: any): boolean {
+    if (this.isErrorOutput(output)) return false;
+    return this.outputToText(output).toLowerCase().includes("approved");
   }
 
   private outputToText(output: any): string {

@@ -65,23 +65,28 @@ const claudePermissionTool = tool({
   async execute(args, ctx) {
     // Permission = the NATIVE tool name → the prompt reads "Call tool Skill /
     // NotebookEdit / Bash …" and rules/"Allow always" are PER native tool.
-    const native = String(args.tool ?? args.title ?? "native tool");
+    const native = String(args.tool ?? args.title ?? "native tool").trim() || "native tool";
     // Pattern = the action target (command / skill / path) so GLOB rules match,
     // e.g. `permission: { Bash: { "git *": "allow" }, Skill: { "review*": "allow" }, "*": "ask" }`.
     const inp: any = args.input && typeof args.input === "object" ? args.input : {};
-    const target = String(
+    const rawTarget = String(
       (inp.command ?? inp.skill ?? inp.name ?? inp.notebook_path ?? inp.file_path ?? inp.path) ||
-      (typeof args.input === "string" ? args.input : "") || args.title || "*",
-    );
-    // "Allow always" remembers a glob: for shell-like targets the first token + " *"
-    // (e.g. `git status` → `git *`), otherwise the exact target.
-    const always = target.includes(" ") ? `${target.split(" ")[0]} *` : target;
+      (typeof args.input === "string" ? args.input : "") || args.title || "",
+    ).trim();
+    const target = rawTarget || "*";
+    // "Allow always" glob: ONLY collapse shell commands (kind=execute) to the first
+    // token (`git status` → `git *`); otherwise the exact target. With no real target
+    // offer NO always-glob — avoids persisting a broad "*" rule that would auto-approve
+    // everything for this native tool.
+    const always =
+      args.kind === "execute" && rawTarget.includes(" ") ? `${rawTarget.split(/\s+/)[0]} *`
+      : rawTarget || undefined;
     // ctx.ask surfaces OpenCode's prompt (default "ask" when no rule matches); throws
     // PermissionRejectedError on reject → the provider denies the native tool.
     await ctx.ask({
       permission: native,
       patterns: [target],
-      always: [always],
+      always: always ? [always] : [],
       metadata: { kind: args.kind, title: args.title, input: args.input },
     });
     return `approved: ${native}`;

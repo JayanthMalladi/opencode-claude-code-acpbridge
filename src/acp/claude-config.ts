@@ -1,7 +1,7 @@
 // Helpers to control the Claude Code ecosystem the ACP agent loads, and to give
 // the agent an isolated config dir that still has auth (linked credentials) but
 // none of the user's skills/agents/plugins/hooks. See `_meta.claudeCode.options`.
-import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, lstatSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -129,12 +129,16 @@ export function prepareIsolatedConfigDir(dir: string = ISOLATED_BASE): string {
   mkdirSync(dir, { recursive: true });
   const cred = join(homedir(), ".claude", ".credentials.json");
   const linked = join(dir, ".credentials.json");
-  if (existsSync(cred) && !existsSync(linked)) {
-    try {
-      symlinkSync(cred, linked);
-    } catch {
-      /* race or already linked — ignore */
-    }
+  if (!existsSync(cred)) return dir;
+  // Keep `linked` a symlink to the LIVE credentials. The agent can refresh the
+  // OAuth token by replacing the symlink with a regular (soon-stale) file, which
+  // desyncs auth from ~/.claude and causes 401s on the next run. So on every
+  // startup, if `linked` isn't already a symlink resolving to `cred`, recreate it.
+  let linked_ok = false;
+  try { linked_ok = lstatSync(linked).isSymbolicLink() && realpathSync(linked) === realpathSync(cred); } catch { linked_ok = false; }
+  if (!linked_ok) {
+    try { rmSync(linked, { force: true }); } catch { /* ignore */ }
+    try { symlinkSync(cred, linked); } catch { /* race or already linked — ignore */ }
   }
   return dir;
 }
