@@ -103,6 +103,20 @@ En desarrollo, apunta por ruta: `["file:///ruta/a/opencode-claude-code-acpbridge
 
 Si das permiso a las tools (p. ej. `"permission": { "read": "allow" }`), el agente podrá usarlas a través de OpenCode.
 
+### Cambiar el `providerID` (p. ej. para opencode-quota)
+
+Por defecto el provider se registra como **`acp`**. Si necesitas otro ID —típicamente **`anthropic`** para que [opencode-quota](https://www.npmjs.com/package/@slkiser/opencode-quota) detecte y muestre la cuota de tu **suscripción**— pásalo en las opciones del **plugin** (no declares un provider a mano, así evitas un doble backend):
+
+```jsonc
+"plugin": [
+  ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp", "providerId": "anthropic" }]
+]
+```
+
+Así el **auto-registro, el resume, el puente de permisos y los agentes** (`claude-code` → `anthropic/default`) usan ese ID de forma **coherente y con un solo backend**.
+
+> ⚠️ Usar `"anthropic"` **sobrescribe el provider oficial de Anthropic** de OpenCode. Es seguro **si no usas la API directa de Anthropic** (consumes de la suscripción vía ACP). A vigilar: OpenCode puede listar modelos "fantasma" de models.dev en el selector (usa solo `anthropic/default` y `anthropic/sonnet`); si algún día quieres la API directa, quita el `providerId`.
+
 ---
 
 ## Opciones del provider (`options`)
