@@ -1,4 +1,4 @@
-import type { Plugin, PluginModule } from "@opencode-ai/plugin";
+import { tool, type Plugin, type PluginModule } from "@opencode-ai/plugin";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { discoverAgent, type DiscoveredAgent } from "./discover.js";
@@ -46,6 +46,54 @@ function providerOptions(opts: Record<string, any>): Record<string, any> {
 }
 
 /**
+ * Permission-bridge meta-tool. The provider emits a `claude_permission` tool-call
+ * when the Claude agent asks (via ACP `requestPermission`) to run a NATIVE tool;
+ * this surfaces OpenCode's own `ask` prompt with the native tool's details, and
+ * the verdict (approved / rejected) is the tool-result the provider maps back to
+ * allow/deny. Granularity per native tool comes from the `patterns` below, e.g.
+ * `permission: { claude_permission: { "Read*": "allow", "*": "ask" } }`.
+ */
+const claudePermissionTool = tool({
+  description:
+    "Permission gate for a native Claude Code tool. Approve to let the agent run that native tool; reject to block it.",
+  args: {
+    tool: tool.schema.string().optional().describe("native tool requested (e.g. Write, Bash, NotebookEdit, Skill)"),
+    kind: tool.schema.string().optional().describe("execute|edit|read|delete|fetch|think|…"),
+    title: tool.schema.string().optional().describe("human label of the action"),
+    input: tool.schema.any().optional().describe("the native tool input"),
+  },
+  async execute(args, ctx) {
+    // Permission = the NATIVE tool name → the prompt reads "Call tool Skill /
+    // NotebookEdit / Bash …" and rules/"Allow always" are PER native tool.
+    const native = String(args.tool ?? args.title ?? "native tool").trim() || "native tool";
+    // Pattern = the action target (command / skill / path) so GLOB rules match,
+    // e.g. `permission: { Bash: { "git *": "allow" }, Skill: { "review*": "allow" }, "*": "ask" }`.
+    const inp: any = args.input && typeof args.input === "object" ? args.input : {};
+    const rawTarget = String(
+      (inp.command ?? inp.skill ?? inp.name ?? inp.notebook_path ?? inp.file_path ?? inp.path) ||
+      (typeof args.input === "string" ? args.input : "") || args.title || "",
+    ).trim();
+    const target = rawTarget || "*";
+    // "Allow always" glob: ONLY collapse shell commands (kind=execute) to the first
+    // token (`git status` → `git *`); otherwise the exact target. With no real target
+    // offer NO always-glob — avoids persisting a broad "*" rule that would auto-approve
+    // everything for this native tool.
+    const always =
+      args.kind === "execute" && rawTarget.includes(" ") ? `${rawTarget.split(/\s+/)[0]} *`
+      : rawTarget || undefined;
+    // ctx.ask surfaces OpenCode's prompt (default "ask" when no rule matches); throws
+    // PermissionRejectedError on reject → the provider denies the native tool.
+    await ctx.ask({
+      permission: native,
+      patterns: [target],
+      always: always ? [always] : [],
+      metadata: { kind: args.kind, title: args.title, input: args.input },
+    });
+    return `approved: ${native}`;
+  },
+});
+
+/**
  * OpenCode plugin half. With the auto-register hook below, a minimal config is enough:
  *
  *   "plugin": [["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]]
@@ -59,6 +107,10 @@ export const ACPPlugin: Plugin = async (_input, options) => {
   const providerId = opts.providerId ?? "acp";
 
   return {
+    // Register the permission-bridge meta-tool so OpenCode can execute it and show
+    // its `ask` prompt when the Claude agent requests a native tool.
+    tool: { claude_permission: claudePermissionTool },
+
     // Bridge OpenCode's sessionID → providerOptions.acp so the provider can map it
     // to a Claude Code session and resume instead of replaying the whole history.
     "chat.params": async (input: any, output: any) => {
@@ -126,12 +178,31 @@ export const ACPPlugin: Plugin = async (_input, options) => {
           const toRef = (m: string) => (m.includes("/") ? m : `${providerId}/${m}`);
           const defs: Record<string, any> = opts.agents ?? {
             "claude-code": {
-              description: "Claude Code (subscription) — orchestrates OpenCode's tools",
-              model: defaultModel, options: { mode: "bypassPermissions" },
+              description: "Claude Code (subscription) — native capabilities with permissions bridged to OpenCode",
+              model: defaultModel,
+              // The bridge meta-tool itself is auto-allowed; the REAL prompt is raised
+              // inside it via ctx.ask under the NATIVE tool's name (Skill/NotebookEdit/…),
+              // so users see and rule on the actual action. Override per tool, e.g.
+              // `permission: { Skill: "allow", NotebookEdit: "ask" }`.
+              permission: { claude_permission: "allow" },
+              options: {
+                mode: "default",                 // not bypass → the agent asks → permission bridge
+                allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
+                // Common native tools are covered by OpenCode → disable them so the agent
+                // doesn't try (and "approve") a native Bash/Write/… it can't actually run;
+                // it uses mcp__opencode__* instead. Native gap tools stay (see `nativeTools`).
+                disallowedTools: ["Bash", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"],
+                resourceSearch: true,            // ListMcpResources / ReadMcpResource (superior to OpenCode)
+                nativeSubagents: true,           // Task: native subagents that delegate to OpenCode's tools
+                nativeTools: ["NotebookEdit", "Read"], // gap OpenCode doesn't cover + native Read (multimodal)
+                projectMemory: true,             // CLAUDE.md/AGENTS.md (verified: keeps subscription)
+                nativeSkills: true,              // ~/.claude/skills, hooks disabled (verified: keeps subscription)
+              },
             },
             "claude-code-plan": {
               description: "Claude Code — plan mode (research & plan, no destructive edits)",
-              model: defaultModel, variant: "high", options: { mode: "plan" },
+              model: defaultModel, variant: "high",
+              options: { mode: "plan", resourceSearch: true },
             },
           };
           cfg.agent ??= {};

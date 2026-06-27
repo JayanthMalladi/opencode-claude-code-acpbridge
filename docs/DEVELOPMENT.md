@@ -61,7 +61,8 @@ TCP server dentro del provider. `setTools()` recibe las tools de OpenCode; cuand
 MCP server **stdio sin dependencias** (solo `node:net`/`node:readline`) que el agente spawnea. Reenvía `tools/list`/`tools/call` por TCP al host (puerto en `ACP_TOOL_HOST_PORT`). No impone timeout cliente → el `tools/call` puede esperar a OpenCode tanto como `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`. Blindado contra `EPIPE`/`ECONNRESET` (el agente lo mata al cerrar).
 
 ### `acp/claude-config.ts`
-`ClaudeCodeControl` (tipo) + `buildClaudeCodeOptions` (→ `_meta.claudeCode.options`) + `resolveConfigDir`/`prepareIsolatedConfigDir`. El **"cerebro limpio"**: `tools:[]`, `settingSources:[]`, y un `CLAUDE_CONFIG_DIR` aislado con `~/.claude/.credentials.json` **enlazado** (auth sin heredar skills/agents/plugins).
+`ClaudeCodeControl` (tipo) + `buildClaudeCodeOptions` (→ `_meta.claudeCode.options`) + `resolveConfigDir`/`prepareIsolatedConfigDir`. El **"cerebro limpio"** por defecto: `tools:[]`, `settingSources:[]`, `strictMcpConfig:true` (sin connectors claude.ai), y un `CLAUDE_CONFIG_DIR` aislado con `~/.claude/.credentials.json` **symlinkeado** (auth sin heredar el ecosistema). `prepareIsolatedConfigDir` **re-enlaza el symlink en cada arranque**: el agente puede reemplazarlo con un archivo obsoleto al refrescar el token → 401; re-linkear lo mantiene sincronizado con `~/.claude`.
+**Toggles de features nativos** (componen `tools`/`settingSources`/`agents`/`settings`; con todos off = cerebro limpio, cero regresión): `nativeTools`, `resourceSearch`, `nativeSubagents` (→ `DEFAULT_SUBAGENT` que delega a OpenCode), `nativeSkills`, `projectMemory`, `skillShell`, `allowedTools`. Un override crudo (`ctrl.tools`/`ctrl.settingSources`) **gana** sobre la composición.
 
 ### `plugin/index.ts`
 - Hook **`config(cfg)`**: descubre modelos (con caché), construye la metadata y **muta** `cfg.provider.acp` y `cfg.agent` (auto-registro). `deepMerge` da precedencia a los agentes que el usuario declaró.
@@ -93,7 +94,16 @@ Factory del provider (una instancia por `modelId`), config por env vars, y el co
 - **Resume** (proceso nuevo): `chat.params` aporta `resumeId` desde `sessions.json`; si el historial creció (no divergió), `unstable_resumeSession(acpSessionId)` reanuda **sin reenviar historial**. Si falla o el historial divergió (compactación/rollback) → `newSession`.
 
 ### Modo y esfuerzo por agente
-`cfg.agent.<n>.options` → OpenCode los pasa como `providerOptions.acp` (key = `providerID`, ver `transform.ts` de OpenCode) → `doStream` los lee → `setSessionMode`/`setSessionConfigOption` en caliente.
+`cfg.agent.<n>.options` → OpenCode los pasa como `providerOptions.acp` (key = `providerID`, ver `transform.ts` de OpenCode) → `doStream` los lee (`effectiveCtrl`) → `setSessionMode`/`setSessionConfigOption` en caliente.
+
+### Puente de permisos (tools nativas)
+Cuando el agente está en modo `default` (no `bypassPermissions`) y usa una tool **nativa** (Skill/Read/NotebookEdit/Task), Claude Code llama `requestPermission` (ACP). El provider **no auto-aprueba**: lo difiere y lo enruta a OpenCode reusando el patrón de tool-call diferido.
+
+1. `requestPermission(params)` → `onRequestPermission` guarda un resolver en `TurnState.pendingPermissions` y **emite a OpenCode** un tool-call de la meta-tool **`claude_permission`** (con `{tool, kind, title, input}`), luego `finish` y cierra el controller (igual que `onToolCall`). Devuelve una Promise (el agente espera).
+2. OpenCode ejecuta `claude_permission` (registrada por el plugin); su `execute` hace **`ctx.ask({permission: <tool nativa>, patterns:[target], always:[glob]})`** → **prompt `ask`** mostrando la tool nativa y la acción. Aprobar → `"approved"`; rechazar → `PermissionRejectedError` (tool-error).
+3. El siguiente `doStream` trae el tool-result de `claude_permission`. `detectContinuation`/`onStart` lo distinguen de tool-results MCP (`pendingPermissions` vs `pendingTools`) y resuelven la Promise: **`isApprovedOutput` falla CERRADO** (solo un veredicto explícito "approved" permite; error/ambiguo → deny). El agente ejecuta (o no) la tool nativa.
+
+Robustez: `claude_permission` se **filtra del host** (`convertTools`) para que el agente no la vea; `onCancel` **no derriba** la sesión con trabajo diferido en vuelo (era la causa de *host closed* cuando OpenCode pausa para el `ask`) pero arma un **watchdog** que libera si la continuación nunca llega; `endTurn`/reuse **drenan** `pendingPermissions` (deny) para que el agente nunca cuelgue. Las tools comunes van en `allowedTools: ["mcp__opencode"]` (no piden `requestPermission`; OpenCode las orquesta).
 
 ### Facturación (suscripción vs extra usage)
 Anthropic clasifica la sesión por el **system prompt**: si reenvías el de OpenCode (`append`/`replace`), la trata como app de terceros → *extra usage*; con `preset` (default) usa el preset oficial `claude_code` → **suscripción**. Decidido empíricamente; ver [acp-subscription-billing](../README.md#system-prompt-y-facturación-suscripción-vs-extra-usage).
@@ -107,6 +117,11 @@ npm install
 npm run build            # tsc → dist/
 ACP_DEBUG=1 …            # logs [acp-orchestrator] / [acp-mcp-host] / [acp-plugin] en stderr
 ```
+
+**Scripts de verificación** (`scripts/`, no se publican a npm, requieren `dist/`):
+
+- `node scripts/verify-billing.mjs` — comprueba que cada feature nativo mantiene la **suscripción** (0 extra usage).
+- `node scripts/spike-permission-bridge.mjs` — valida el **puente de permisos** e2e (approved crea el archivo; denied no).
 
 **Spikes** (sin OpenCode): scripts `.mjs` dentro del repo que importan `../dist/...` y usan `streamText` del AI SDK o el SDK ACP directamente. Patrón típico:
 

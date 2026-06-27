@@ -4,7 +4,7 @@ Plugin **exclusivo para usar [Claude Code](https://www.anthropic.com/claude-code
 
 > Un único paquete npm que se registra a la vez como **provider** (`createACPModelProvider`) y como **plugin** (`default { id, server }`) de OpenCode.
 
-**Atajos:** [Inicio rápido](#configuración-en-opencode) · [Agentes](#agentes-claude-code-modos-esfuerzo-subagentes) · [Facturación](#system-prompt-y-facturación-suscripción-vs-extra-usage) · [Diagnóstico](#diagnóstico) · [Ejemplos de config](examples/) · [Desarrollo](docs/DEVELOPMENT.md)
+**Atajos:** [Inicio rápido](#configuración-en-opencode) · [Agentes](#agentes-claude-code-modos-esfuerzo-subagentes) · [Facturación](#system-prompt-y-facturación-suscripción-vs-extra-usage) · [Diagnóstico](#diagnóstico) · [Ejemplos de config](examples/) · [Desarrollo](docs/DEVELOPMENT.md) · [Cambios](CHANGELOG.md)
 
 ---
 
@@ -140,6 +140,13 @@ Por defecto el agente arranca aislado (sin tus skills/hooks/agents/MCP). Puedes 
 | `tools` | `string[]` | `[]` | Herramientas **nativas** del agente a habilitar. `[]` = ninguna. |
 | `disallowedTools` | `string[]` | — | Herramientas nativas a prohibir. |
 | `strictMcpConfig` | `boolean` | **`true`** | Usa **solo** el host de tools de OpenCode e ignora todo lo demás: el `.claude.json` y los **connectors de tu cuenta claude.ai** (Gmail, Drive, Supabase, Notion…). `false` para dejar pasar esos connectors. |
+| `allowedTools` | `string[]` | — | Tools auto-aprobadas (sin `requestPermission`). Con el **puente de permisos** activo se usa `["mcp__opencode"]` para que las tools de OpenCode no pidan doble permiso (ver "Puente de permisos"). |
+| `nativeTools` | `string[]` | — | Tools **nativas** de Claude que OpenCode no cubre (p. ej. `["NotebookEdit"]`). Se añaden a `tools`. |
+| `resourceSearch` | `boolean` | — | Habilita `ListMcpResources`/`ReadMcpResource` (búsqueda de recursos MCP, superior a OpenCode). |
+| `nativeSubagents` | `boolean \| Record` | — | Subagentes nativos (`Task`). `true` añade un subagente "general" que **delega la ejecución a OpenCode**; un `Record` define subagentes a medida. |
+| `nativeSkills` | `boolean \| string[]` | — | Skills de Claude Code. `string[]` precarga solo esos (`settings.skills`, menor riesgo billing); `true` carga `~/.claude/skills` (`settingSources:"user"`, mayor riesgo). Añade la tool `Skill`. |
+| `projectMemory` | `boolean` | — | Carga `CLAUDE.md`/`AGENTS.md` del proyecto (`settingSources:"project"`). Convive con plugins de memoria de OpenCode (hindsight). |
+| `skillShell` | `boolean` | `false` | Permite que los skills ejecuten shell con la `Bash` nativa. Por defecto orquestan vía las tools de OpenCode. |
 | `agents`, `hooks`, `mcpServers`, `plugins`, `systemPrompt` | — | — | Inyectar subagents/hooks/MCP/plugins propios o un system prompt avanzado. |
 | `options` | `Record<string,unknown>` | — | Passthrough libre a `_meta.claudeCode.options` (cualquier campo del SDK). |
 
@@ -223,11 +230,17 @@ Cada agente lleva `options` (modo ACP, esfuerzo…) que viajan al provider como 
 
 ---
 
-## Manejo de las herramientas
+## Manejo de las herramientas y puente de permisos
 
-- **OpenCode orquesta todo.** El provider captura **todas** las herramientas que OpenCode expone al modelo: las nativas (`read`, `write`, `bash`, `edit`, `glob`, `grep`, `task`, `todowrite`, …) y **las de los MCP servers que tengas configurados en tu OpenCode** (con nombres `<servidor>_<tool>`). Todas se ejecutan en OpenCode, con sus permisos.
-- El agente Claude **no** ejecuta sus herramientas internas (están deshabilitadas con `tools: []`). Solo propone; OpenCode ejecuta.
-- No hace falta traducir nombres ni argumentos: el provider expone cada tool con el mismo `inputSchema` de OpenCode y emite el `tool-call` con el nombre real.
+El agente `claude-code` combina **lo mejor de ambos mundos** — *potencia nativa sin estropear nada*:
+
+- **Tools comunes → OpenCode las orquesta.** El provider captura todas las que OpenCode expone (nativas `read`/`write`/`bash`/`edit`/`grep`/… + las de tus MCP servers) y el agente las usa vía MCP: se ejecutan en OpenCode con sus permisos, su TUI y su registro (hindsight las ve). Van en `allowedTools: ["mcp__opencode"]` para que **no pidan doble permiso**.
+- **Capacidades nativas superiores de Claude Code** que OpenCode no replica, activas por defecto: **skills** (`Skill`), **subagentes** (`Task`, que delegan la ejecución a OpenCode), **búsqueda de recursos MCP** (`ListMcpResources`/`ReadMcpResource`) y tools de nicho (`NotebookEdit`). Más la **memoria del proyecto** (`CLAUDE.md`/`AGENTS.md`), que convive con hindsight.
+- **Puente de permisos.** Cuando el agente (o un subagente) quiere usar una tool **nativa**, Claude Code pide permiso vía ACP (`requestPermission`); el provider lo **camufla como un tool-call de `claude_permission`** (meta-tool que el plugin registra en OpenCode), así **OpenCode muestra su prompt `ask`** con qué quiere hacer Claude y **tu veredicto** (aprobar/rechazar) vuelve al agente. El agente tiene toda su potencia nativa, pero **tú controlas cada acción** desde OpenCode.
+  - Granularidad por tool: `permission: { claude_permission: { "Read*": "allow", "*": "ask" } }`.
+  - Requiere que el agente NO esté en `bypassPermissions` → el agente `claude-code` usa `mode: "default"`.
+- **Facturación**: todos estos features mantienen tu **suscripción** (verificado con `scripts/verify-billing.mjs`, 0 extra usage) — son nativos de Claude Code.
+- Para el modelo **clásico "cerebro limpio"** (sin nativas, OpenCode ejecuta todo) usa `mode: "bypassPermissions"` + sin toggles, o el provider manual con `claudeCode.tools: []`.
 
 ---
 
@@ -270,8 +283,8 @@ npx opencode-claude-code-acpbridge sync claude-agent-acp
 ## Estado y limitaciones
 
 - ✅ Chat con streaming y **bloque de razonamiento** visible en OpenCode (`Thought: …`, vía `thinking` summarized por defecto).
-- ✅ **Cerebro limpio**: sin tools nativas ni connectors de claude.ai (`strictMcpConfig`); el agente solo usa las tools de OpenCode.
-- ✅ "OpenCode orquesta": el agente usa las tools de OpenCode (nativas + MCP de OpenCode), ejecutadas por OpenCode con permisos.
+- ✅ **Capacidades nativas + puente de permisos**: el agente `claude-code` usa skills, subagentes (`Task`), búsqueda de recursos MCP y `NotebookEdit` nativos, con memoria de proyecto (`CLAUDE.md`); cada acción nativa pide permiso vía el **`ask` de OpenCode** (meta-tool `claude_permission`). Las tools comunes las orquesta OpenCode (`allowedTools: ["mcp__opencode"]`, sin doble permiso). Todo en **suscripción** (verificado). Ver [Manejo de las herramientas y puente de permisos](#manejo-de-las-herramientas-y-puente-de-permisos).
+- ✅ **Cerebro limpio** disponible (modo clásico): sin tools nativas ni connectors de claude.ai (`strictMcpConfig`); el agente solo usa las tools de OpenCode (`mode: "bypassPermissions"`).
 - ✅ Auto-registro: el plugin descubre los modelos del agente e inyecta el provider con metadata de models.dev (config mínima); refrescable con `npx opencode-claude-code-acpbridge sync`.
 - ✅ Sesión persistente por conversación (prompt cache) y **reanudación entre procesos** (`sessions.json` + `resumeSession` → no reenvía el historial al reabrir una sesión).
 - ✅ **Agentes inyectados** (`claude-code`, `claude-code-plan`) con modo/esfuerzo por agente aplicados en caliente; **tu `opencode.json` tiene precedencia** (merge).
