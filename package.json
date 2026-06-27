@@ -18,7 +18,8 @@
   "files": [
     "dist",
     "docs",
-    "examples"
+    "examples",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -37,6 +38,18 @@
     "provider"
   ],
   "license": "MIT",
+  "author": "Antonio Orizondo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aorizondo/opencode-claude-code-acpbridge.git"
+  },
+  "homepage": "https://github.com/aorizondo/opencode-claude-code-acpbridge#readme",
+  "bugs": {
+    "url": "https://github.com/aorizondo/opencode-claude-code-acpbridge/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.14.1",
     "@mcpc-tech/acp-ai-provider": "^0.3.0"
@@ -48,6 +61,10 @@
   },
   "peerDependencies": {
     "@ai-sdk/provider": "^3.0.0",
+    "@opencode-ai/plugin": ">=1.14",
     "ai": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": { "optional": true }
   }
 }

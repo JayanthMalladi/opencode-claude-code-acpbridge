@@ -1,0 +1,32 @@
+{
+  // Puente de permisos: el agente `claude-code` usa tools NATIVAS de Claude (Skill,
+  // Read, NotebookEdit, subagentes) y CADA acción nativa pide permiso vía el `ask`
+  // de OpenCode. Aquí ajustas QUÉ pide permiso y qué features nativos van activos,
+  // sin tocar el código del plugin (tu config gana por merge).
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
+  ],
+  "agent": {
+    "claude-code": {
+      // Reglas de permiso POR TOOL NATIVA — el prompt se titula con la tool (Read/Skill/…).
+      // El PATTERN es la acción (comando / skill / ruta), así que admite GLOBS.
+      // Sin regla que matchee → "ask" (el default seguro).
+      "permission": {
+        "Read": "allow",                 // lecturas nativas (multimodal): permitir siempre
+        "Skill": { "*": "allow" },        // cualquier skill: permitir
+        "NotebookEdit": "ask",            // editar notebooks Jupyter: preguntar
+        "*": "ask"                        // cualquier otra tool nativa: preguntar
+        // claude_permission queda "allow" (es la meta-tool puente; el ask real lo
+        // levanta ella con el nombre de la tool nativa de arriba).
+      },
+      // Toggles de features nativos (todos ON por defecto). Descomenta para cambiar:
+      "options": {
+        // "nativeSkills": ["pdf", "xlsx"],   // precargar solo estos skills (en vez de todo ~/.claude/skills)
+        // "nativeSubagents": false,          // desactivar los subagentes nativos de Claude
+        // "nativeTools": ["NotebookEdit", "Read", "WebSearch"],  // exponer otra tool nativa de nicho
+        // "mode": "bypassPermissions"        // volver al "cerebro limpio" clásico (sin puente)
+      }
+    }
+  }
+}

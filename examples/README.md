@@ -14,6 +14,7 @@
 | [`05-agentes-personalizados.jsonc`](05-agentes-personalizados.jsonc) | **Tus propios agentes** (por modelo, por modo) o desactivar los de serie. | `plugin.options.agents` |
 | [`06-ecosistema-claude.jsonc`](06-ecosistema-claude.jsonc) | **Heredar tu Claude Code** (skills/hooks/MCP de `~/.claude`). | `claudeCode.configDir: false`, `settingSources` |
 | [`07-provider-manual.jsonc`](07-provider-manual.jsonc) | **Control total**: declaras el provider a mano (sin auto-registro). | `provider.acp` |
+| [`08-puente-permisos.jsonc`](08-puente-permisos.jsonc) | **Puente de permisos**: reglas por tool nativa (con globs) + toggles de features. | `agent.claude-code.permission` / `options` |
 
 Notas transversales:
 - El default `systemPromptMode: "preset"` es lo que mantiene el consumo en tu **suscripción** (0 extra usage). Cámbialo solo si aceptas *extra usage*.

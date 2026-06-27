@@ -4,7 +4,7 @@ Plugin **exclusivo para usar [Claude Code](https://www.anthropic.com/claude-code
 
 > Un único paquete npm que se registra a la vez como **provider** (`createACPModelProvider`) y como **plugin** (`default { id, server }`) de OpenCode.
 
-**Atajos:** [Inicio rápido](#configuración-en-opencode) · [Agentes](#agentes-claude-code-modos-esfuerzo-subagentes) · [Facturación](#system-prompt-y-facturación-suscripción-vs-extra-usage) · [Diagnóstico](#diagnóstico) · [Ejemplos de config](examples/) · [Desarrollo](docs/DEVELOPMENT.md)
+**Atajos:** [Inicio rápido](#configuración-en-opencode) · [Agentes](#agentes-claude-code-modos-esfuerzo-subagentes) · [Facturación](#system-prompt-y-facturación-suscripción-vs-extra-usage) · [Diagnóstico](#diagnóstico) · [Ejemplos de config](examples/) · [Desarrollo](docs/DEVELOPMENT.md) · [Cambios](CHANGELOG.md)
 
 ---
 
