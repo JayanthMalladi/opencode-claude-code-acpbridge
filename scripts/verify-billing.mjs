@@ -13,6 +13,10 @@ const FEATURES = {
   "projectMemory":          { projectMemory: true },
   "nativeSkills (preload)": { nativeSkills: ["pdf"] },
   "nativeSkills (true=all)":{ nativeSkills: true },
+  // Defaults nuevos: configDir heredado (~/.claude) y reenvio del <env> de OpenCode
+  // como contexto de usuario. Ambos deben seguir en suscripcion.
+  "configDir aislado":      { configDir: "isolated" },
+  "perfil por defecto":     { nativeTools: ["NotebookEdit", "Read", "ExitPlanMode", "WebSearch"], resourceSearch: true, nativeSubagents: true, projectMemory: true, nativeSkills: true },
 };
 
 const EXTRA = /extra usage|overage|third-party|not.*your plan|draw from/i;
@@ -20,12 +24,16 @@ const EXTRA = /extra usage|overage|third-party|not.*your plan|draw from/i;
 for (const [name, feat] of Object.entries(FEATURES)) {
   const model = createACPModelProvider({
     command: "claude-agent-acp",
-    claudeExecutable: "/home/antonio/.local/bin/claude",
-    claudeCode: { configDir: "isolated", systemPromptMode: "preset", mode: "bypassPermissions", ...feat },
+    claudeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
+    claudeCode: { systemPromptMode: "preset", mode: "bypassPermissions", ...feat },
   }).languageModel("sonnet");
   try {
     let out = "", err = null;
-    for await (const p of streamText({ model, prompt: "Responde solo: OK" }).fullStream) {
+    const messages = [
+      { role: "system", content: `Contexto.\n<env>\n  Working directory: ${process.cwd()}\n  Platform: linux\n</env>` },
+      { role: "user", content: "Responde solo: OK" },
+    ];
+    for await (const p of streamText({ model, messages }).fullStream) {
       if (p.type === "text-delta") out += (p.delta ?? p.text ?? "");
       else if (p.type === "error") { err = p.error; break; }
     }

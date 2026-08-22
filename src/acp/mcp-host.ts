@@ -37,10 +37,24 @@ export class McpHost {
   private handler: ToolCallHandler | null = null;
   private counter = 0;
 
-  constructor(private readonly name = "opencode") {}
+  /** `idPrefix` scopes minted toolCallIds to THIS host instance. It MUST be unique per
+   *  host (a fresh host is created on every ACP session reset), otherwise the per-host
+   *  counter restarts at 0 and re-mints `acp_1`, `acp_2`, … — which then collide with
+   *  old tool-results still in OpenCode's replayed history and `detectContinuation`
+   *  resolves a fresh call with a STALE result. The caller passes a random-nonce prefix. */
+  constructor(private readonly name = "opencode", private readonly idPrefix = "acp_") {}
 
   setTools(tools: McpToolDef[]) {
     this.tools = tools;
+  }
+
+  /** Push an MCP `tools/list_changed` notification to the connected runtime so the
+   *  agent re-fetches the tool list. Lets a tool-set change be applied to a LIVE
+   *  session instead of forcing a fresh one (which would replay the whole history
+   *  and throw away Claude's prompt cache). */
+  notifyToolsChanged() {
+    hdbg(`tools changed (${this.tools.length}) → notifying ${this.sockets.size} runtime(s)`);
+    for (const s of this.sockets) this.send(s, { method: "toolsChanged" });
   }
 
   onToolCall(handler: ToolCallHandler) {
@@ -129,7 +143,7 @@ export class McpHost {
       hdbg(`runtime → getTools (serving ${this.tools.length} tools)`);
       this.send(socket, { id: msg.id, result: this.tools });
     } else if (msg.method === "callTool") {
-      const toolCallId = `acp_${++this.counter}`;
+      const toolCallId = `${this.idPrefix}${++this.counter}`;
       this.pending.set(toolCallId, { socket, runtimeId: msg.id });
       this.handler?.({ toolCallId, name: msg.params?.name ?? "", args: msg.params?.args ?? {} });
     }

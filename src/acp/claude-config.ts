@@ -21,10 +21,15 @@ export type ClaudeThinking =
 export interface ClaudeCodeControl {
   /**
    * Config dir for the agent:
-   *  - `"isolated"` (default): a clean dir under `~/.acp-model-provider` with the
-   *    user's `.credentials.json` symlinked in (auth without skills/agents/plugins).
+   *  - `false` (default): inherit the user's `~/.claude`. Sessions started from
+   *    OpenCode land in `~/.claude/projects/…`, so they can be picked back up
+   *    natively with `claude --resume <id>`. This does NOT pull in the user's
+   *    ecosystem on its own — `settingSources`/`tools`/`strictMcpConfig` still
+   *    govern what the agent loads; it only decides where its state lives.
+   *  - `"isolated"`: a clean dir under `~/.acp-model-provider` with the user's
+   *    `.credentials.json` symlinked in (auth without skills/agents/plugins).
+   *    Sessions created there are invisible to `claude --resume`.
    *  - a path string: used as `CLAUDE_CONFIG_DIR` verbatim.
-   *  - `false`: inherit the user's `~/.claude` (full ecosystem).
    */
   configDir?: string | "isolated" | false;
   /** Settings inheritance. Default `[]` (note: the ACP agent may force user/project/local). */
@@ -109,6 +114,17 @@ export interface ClaudeCodeControl {
    *  - `"replace"`: use OpenCode's system as the whole system prompt (also *extra usage*).
    */
   systemPromptMode?: "append" | "replace" | "preset";
+  /**
+   * Forward the FACTUAL part of OpenCode's system prompt (its `<env>` block —
+   * working directory, workspace root, git, platform, date — and
+   * `<available_references>`) to the agent as user context. Default `true`.
+   *
+   * Under `systemPromptMode: "preset"` the system prompt itself never reaches the
+   * agent, so without this it works without knowing where it is. Only factual
+   * blocks travel — never OpenCode's behavioural instructions — so this keeps the
+   * session on the subscription. Sent in full once per session, then as deltas.
+   */
+  forwardEnvContext?: boolean;
 
   // ---- ecosystem ----
   /** Advanced override passed straight to `_meta.claudeCode.options.systemPrompt`. */
@@ -143,11 +159,14 @@ export function prepareIsolatedConfigDir(dir: string = ISOLATED_BASE): string {
   return dir;
 }
 
-/** Resolve the `CLAUDE_CONFIG_DIR` value (undefined ⇒ inherit ~/.claude). */
+/** Resolve the `CLAUDE_CONFIG_DIR` value (undefined ⇒ inherit ~/.claude, the default).
+ *  Inheriting is what makes an OpenCode-started conversation resumable with
+ *  `claude --resume`, and it also sidesteps the credential-symlink desync that
+ *  the isolated dir needs to work around. */
 export function resolveConfigDir(ctrl: ClaudeCodeControl): string | undefined {
-  if (ctrl.configDir === false) return undefined;
-  if (typeof ctrl.configDir === "string" && ctrl.configDir !== "isolated") return ctrl.configDir;
-  return prepareIsolatedConfigDir();
+  if (ctrl.configDir === undefined || ctrl.configDir === false) return undefined;
+  if (ctrl.configDir === "isolated") return prepareIsolatedConfigDir();
+  return ctrl.configDir;
 }
 
 /** General subagent that completes a delegated task using the AVAILABLE tools

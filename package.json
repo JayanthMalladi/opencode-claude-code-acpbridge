@@ -1,6 +1,6 @@
 {
   "name": "opencode-claude-code-acpbridge",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Use Claude Code inside OpenCode. An OpenCode plugin + model provider that bridges Claude Code over ACP (Agent Client Protocol): run it on your Claude subscription while OpenCode orchestrates the tools, permissions and TUI.",
   "type": "module",
   "main": "./dist/index.js",
@@ -65,6 +65,8 @@
     "ai": "^6.0.0"
   },
   "peerDependenciesMeta": {
-    "@opencode-ai/plugin": { "optional": true }
+    "@opencode-ai/plugin": {
+      "optional": true
+    }
   }
 }

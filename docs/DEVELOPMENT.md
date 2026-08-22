@@ -48,7 +48,14 @@ El principio rector es **"OpenCode orquesta"**: el agente Claude solo **razona y
 El corazón. Implementa `doStream`/`doGenerate` y mantiene una **sesión ACP persistente por conversación**.
 
 - **Conexión** (`connect`): spawnea el agente con el env correcto (`CLAUDE_CODE_EXECUTABLE`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`, `ANTHROPIC_MODEL`), abre `ClientSideConnection`, `initialize`. El cliente auto-aprueba `requestPermission` (OpenCode ya gobierna los permisos).
-- **Identidad de sesión**: `convKey` (hash del 1er mensaje de usuario) + `toolsKey` (set de tools) + `systemKey` (hash del system) + `cfgKey` (thinking/systemPromptMode). Si todo coincide → **reusar** sesión y enviar solo el delta (último mensaje); si cambia → **reset** (nueva sesión + historial completo).
+- **Identidad de sesión**: una `TurnState` por conversación (`Map` indexado por el sessionID de OpenCode), más un índice por `sessionId` ACP para enrutar los callbacks del agente. Recrear la sesión tira el prompt cache de Claude (vive y muere con ella), así que se recrea lo mínimo posible:
+  - `systemKey` solo cuenta **si el system de verdad viaja** — con `systemPromptMode: "preset"` (default) no viaja, así que cambiar de agente en OpenCode **no** recrea nada.
+  - `toolsKey` ya **no** recrea: un set de tools distinto se aplica en caliente con `notifications/tools/list_changed` por el canal MCP.
+  - `cfgKey` (thinking/systemPromptMode) sí recrea: son parámetros de creación.
+  - La llamada del small model (títulos/resúmenes, `tools=0`) va a una sesión efímera aparte.
+- **Sincronía de historial**: `sentKeys` guarda una huella por mensaje no-system ya enviado. Comparando con el prompt entrante se distingue *append* (envía solo la cola), *revert* (el prompt es prefijo estricto → sesión nueva) y *divergencia* por compactación (→ sesión nueva). En el catch-up se **omiten** los `tool-call`/`tool-result` propios (prefijo nonce del host: el agente ya los tiene) y se truncan los ajenos.
+- **Buffer de stream** (`emit`/`flushPending`): texto y thinking llegan por stdio ACP mientras las tool-calls llegan por el socket TCP del host, sin orden garantizado. Cuando una tool-call cierra el stream, lo que sigue llegando se **bufferiza** y se vuelca en el stream de continuación en vez de perderse.
+- **Contexto factual** (`contextBlocks`): con `preset` el system de OpenCode no llega al agente, así que su bloque `<env>` (y `<available_references>`) se reenvía como contenido de **usuario** — completo la primera vez, luego solo el delta.
 - **`effectiveCtrl(options)`**: fusiona `config.claudeCode` con `providerOptions.acp` (mode/effort/thinking/systemPromptMode por agente/llamada).
 - **`applySessionConfig`**: aplica `mode` (`setSessionMode`) y `effort` (`setSessionConfigOption`) **en caliente** (sin recrear).
 - **Flujo de tools diferidas** (ver §4).

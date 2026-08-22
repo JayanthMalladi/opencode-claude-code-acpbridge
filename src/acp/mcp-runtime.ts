@@ -52,6 +52,11 @@ function onHostLine(line: string) {
   if (!line.trim()) return;
   let msg: any;
   try { msg = JSON.parse(line); } catch { return; }
+  // Host-initiated notification (no id): the OpenCode tool set changed.
+  if (msg.method === "toolsChanged") {
+    write({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+    return;
+  }
   const p = hostPending.get(msg.id);
   if (!p) return;
   hostPending.delete(msg.id);

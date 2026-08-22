@@ -4,12 +4,16 @@ import { dirname, join } from "node:path";
 import { discoverAgent, type DiscoveredAgent } from "./discover.js";
 import { loadAnthropicCatalog, buildModels } from "./catalog.js";
 import { readCacheKeyed, writeCache } from "./cache.js";
-import { getLink } from "./sessions.js";
+import { getLink, clearLink } from "./sessions.js";
 import { detectClaudeExecutable } from "../provider/factory.js";
 
 const DEBUG = !!process.env.ACP_DEBUG;
 const dbg = (m: string) => { if (DEBUG) process.stderr.write(`[acp-plugin] ${m}\n`); };
 const DISCOVERY_TTL = 60 * 60 * 1000; // 1h
+
+/** Last seen revert marker per OpenCode session, so the `session.updated` firehose
+ *  only acts when the rewind point actually moved. */
+const revertMarks = new Map<string, string>();
 
 function hash(s: string): string {
   let h = 5381;
@@ -120,6 +124,10 @@ export const ACPPlugin: Plugin = async (_input, options) => {
         if (!oc) return;
         output.options = output.options ?? {};
         output.options.ocSession = oc; // registry key — always
+        // Which OpenCode agent is driving this turn. The provider keeps it for its
+        // logs and for the notice it prints when the Claude agent leaves plan mode
+        // on its own (OpenCode still shows the agent the user picked).
+        if (input?.agent) output.options.ocAgent = String(input.agent);
         const link = getLink(oc);
         if (link?.acpSessionId) {       // only if registered (resumable)
           output.options.resumeId = link.acpSessionId;
@@ -127,8 +135,30 @@ export const ACPPlugin: Plugin = async (_input, options) => {
           // Seed the model's cumulative usage snapshot so per-turn deltas stay
           // correct after a process restart (ACP usage is cumulative per session).
           if (link.lastUsage) output.options.resumeLastUsage = link.lastUsage;
+          // Conversation identity, for the model to notice if this OpenCode
+          // sessionID were ever reused for an unrelated conversation.
+          if (link.convKey) output.options.resumeConvKey = link.convKey;
         }
       } catch { /* ignore */ }
+    },
+
+    // Rewinding a conversation (revert / unrevert) truncates OpenCode's history,
+    // but the Claude Code session on the other side still remembers every turn that
+    // was undone. Drop the registry link so the next turn starts a clean agent
+    // session from the truncated history instead of resuming one that would
+    // resurrect it. The provider ALSO detects this from the prompt itself (history
+    // fingerprint), so programmatic use without the plugin stays correct.
+    event: async ({ event }: any) => {
+      try {
+        if (event?.type !== "session.updated") return;
+        const info = event?.properties?.info;
+        const id = info?.id;
+        if (!id) return;
+        const mark = info?.revert ? `${info.revert.messageID}:${info.revert.partID ?? ""}` : "";
+        if (revertMarks.get(id) === mark) return;
+        revertMarks.set(id, mark);
+        if (clearLink(id)) dbg(`session ${id} rewound (revert=${mark || "cleared"}) — link dropped, next turn starts fresh`);
+      } catch { /* never break the event bus */ }
     },
 
     config: async (cfg: any) => {
@@ -176,6 +206,34 @@ export const ACPPlugin: Plugin = async (_input, options) => {
         if (opts.agents !== false) {
           const defaultModel = opts.agentModel ?? "default";
           const toRef = (m: string) => (m.includes("/") ? m : `${providerId}/${m}`);
+          // Native feature set shared by the Claude Code agents ("clean brain" + the
+          // reactivated native capabilities, all permission-bridged to OpenCode). CRUCIAL:
+          // `nativeSubagents` gives the agent Claude Code's OWN `Task` tool, so delegated
+          // work runs as a native subagent on the subscription. Without it the agent falls
+          // back to OpenCode's forwarded `task` tool, which spawns OpenCode subagents routed
+          // to OTHER providers (opencode-go/…) — those fail when they're down/out-of-balance.
+          // IDENTICAL for both agents on purpose. `claude-code-plan` and `claude-code`
+          // differ ONLY in the initial session mode. The Claude agent can leave plan
+          // mode by itself (ExitPlanMode), and nothing tells OpenCode to switch agent —
+          // so if the two profiles differed, the agent would believe it may edit while
+          // OpenCode kept handing it the restricted plan profile. Making the mode the
+          // only difference removes that half-restricted state entirely.
+          const nativeBase: Record<string, any> = {
+            allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
+            // Common native tools are covered by OpenCode → disable them so the agent
+            // doesn't try (and "approve") a native Bash/Write/… it can't actually run;
+            // it uses mcp__opencode__* instead. Native gap tools stay (see `nativeTools`).
+            disallowedTools: ["Bash", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebFetch", "TodoWrite"],
+            resourceSearch: true,            // ListMcpResources / ReadMcpResource (superior to OpenCode)
+            nativeSubagents: true,           // Task: native subagents that delegate to OpenCode's tools
+            // Gap tools OpenCode doesn't cover, plus the two that make plan mode work
+            // at all: ExitPlanMode (without it a plan-mode session has NO way out and
+            // the mode is re-forced every turn) and WebSearch (OpenCode only registers
+            // its own `websearch` for providerID "opencode" or with exa/parallel on).
+            nativeTools: ["NotebookEdit", "Read", "ExitPlanMode", "WebSearch"],
+            projectMemory: true,             // CLAUDE.md/AGENTS.md (verified: keeps subscription)
+            nativeSkills: true,              // ~/.claude/skills, hooks disabled (verified: keeps subscription)
+          };
           const defs: Record<string, any> = opts.agents ?? {
             "claude-code": {
               description: "Claude Code (subscription) — native capabilities with permissions bridged to OpenCode",
@@ -187,22 +245,24 @@ export const ACPPlugin: Plugin = async (_input, options) => {
               permission: { claude_permission: "allow" },
               options: {
                 mode: "default",                 // not bypass → the agent asks → permission bridge
-                allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
-                // Common native tools are covered by OpenCode → disable them so the agent
-                // doesn't try (and "approve") a native Bash/Write/… it can't actually run;
-                // it uses mcp__opencode__* instead. Native gap tools stay (see `nativeTools`).
-                disallowedTools: ["Bash", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"],
-                resourceSearch: true,            // ListMcpResources / ReadMcpResource (superior to OpenCode)
-                nativeSubagents: true,           // Task: native subagents that delegate to OpenCode's tools
-                nativeTools: ["NotebookEdit", "Read"], // gap OpenCode doesn't cover + native Read (multimodal)
-                projectMemory: true,             // CLAUDE.md/AGENTS.md (verified: keeps subscription)
-                nativeSkills: true,              // ~/.claude/skills, hooks disabled (verified: keeps subscription)
+                ...nativeBase,
               },
             },
             "claude-code-plan": {
               description: "Claude Code — plan mode (research & plan, no destructive edits)",
               model: defaultModel, variant: "high",
-              options: { mode: "plan", resourceSearch: true },
+              // Same permission bridge as claude-code: native tool requests surface as
+              // OpenCode `ask` prompts under the real tool name.
+              permission: { claude_permission: "allow" },
+              options: {
+                ...nativeBase,
+                // The ONLY difference from `claude-code`. Read-only research & planning
+                // is enforced by the session mode (and OpenCode's own plan gating), not
+                // by a narrower tool profile — see the note on `nativeBase`. Approving
+                // the plan moves the session to `default`, and from that moment this
+                // agent behaves exactly like `claude-code`.
+                mode: "plan",
+              },
             },
           };
           cfg.agent ??= {};

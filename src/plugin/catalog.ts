@@ -92,7 +92,6 @@ export function buildModels(
   for (const am of agentModels) {
     const cat = matchCatalog(am.id, catalog);
     const is1m = /\[1m\]|1m/i.test(am.id);
-    const isDefault = am.id.toLowerCase() === "default"; // "default" = Opus 4.7 w/ 1M ctx
     const reasoning = cat?.reasoning ?? true;
     const variants: Record<string, { effort: string }> = {};
     if (reasoning) for (const e of EFFORTS) variants[e] = { effort: e };
@@ -106,7 +105,10 @@ export function buildModels(
         ? { input: cat.cost.input, output: cat.cost.output, cache_read: cat.cost.cache_read ?? 0, cache_write: cat.cost.cache_write ?? 0 }
         : { input: 0, output: 0, cache_read: 0, cache_write: 0 },
       limit: {
-        context: is1m || isDefault ? Math.max(cat?.limit?.context ?? 0, 1_000_000) : cat?.limit?.context ?? 200_000,
+        // Only the explicit `[1m]` variants get the 1M window. Advertising 1M for the
+        // plain model kept OpenCode's auto-compaction from ever triggering, so the
+        // conversation grew unbounded — report the catalogue's real window instead.
+        context: is1m ? Math.max(cat?.limit?.context ?? 0, 1_000_000) : cat?.limit?.context ?? 200_000,
         output: cat?.limit?.output ?? 8192,
       },
       modalities: { input: [...input], output: ["text"] },

@@ -32,6 +32,11 @@ export interface SessionLink {
    *  first post-resume turn. Optional for backward compatibility with old
    *  registry entries. */
   lastUsage?: AcpUsageSnapshot;
+  /** Hash of the conversation's first user message (same as the model's
+   *  `convKey`). Identity check for resume: if the OpenCode sessionID were ever
+   *  reused for an unrelated conversation, this lets the caller notice. Optional
+   *  for backward compatibility with old registry entries. */
+  convKey?: string;
 }
 
 function readAll(): Record<string, SessionLink> {
@@ -48,17 +53,40 @@ export function getLink(ocSession: string): SessionLink | undefined {
 }
 
 /** Upsert the link (keeps the registry synchronized after create/recreate). */
-export function setLink(ocSession: string, acpSessionId: string, sentHistoryLen: number): void {
+export function setLink(ocSession: string, acpSessionId: string, sentHistoryLen: number, convKey?: string): void {
   try {
     mkdirSync(DIR, { recursive: true });
     const all = readAll();
     // Preserve `lastUsage` from any prior entry: it's updated on a separate
     // event (end-of-turn) and would otherwise be clobbered by every setLink.
     const prev = all[ocSession];
-    all[ocSession] = { acpSessionId, sentHistoryLen, ts: Date.now(), ...(prev?.lastUsage ? { lastUsage: prev.lastUsage } : {}) };
+    all[ocSession] = {
+      acpSessionId,
+      sentHistoryLen,
+      ts: Date.now(),
+      ...(prev?.lastUsage ? { lastUsage: prev.lastUsage } : {}),
+      ...(convKey ? { convKey } : {}),
+    };
     writeFileSync(FILE, JSON.stringify(all));
   } catch {
     /* best-effort: a missing registry just means resume won't kick in */
+  }
+}
+
+/** Forget the link for an OpenCode session. Used when the conversation is rewound
+ *  (revert/unrevert): the agent-side session still remembers everything that was
+ *  undone, so resuming it would resurrect the reverted turns. Dropping the link
+ *  makes the next turn start a clean agent session from the truncated history. */
+export function clearLink(ocSession: string): boolean {
+  try {
+    const all = readAll();
+    if (!all[ocSession]) return false;
+    delete all[ocSession];
+    mkdirSync(DIR, { recursive: true });
+    writeFileSync(FILE, JSON.stringify(all));
+    return true;
+  } catch {
+    return false;
   }
 }
 
