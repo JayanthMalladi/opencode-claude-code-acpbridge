@@ -146,15 +146,25 @@ export function prepareIsolatedConfigDir(dir: string = ISOLATED_BASE): string {
   const cred = join(homedir(), ".claude", ".credentials.json");
   const linked = join(dir, ".credentials.json");
   if (!existsSync(cred)) return dir;
-  // Keep `linked` a symlink to the LIVE credentials. The agent can refresh the
-  // OAuth token by replacing the symlink with a regular (soon-stale) file, which
-  // desyncs auth from ~/.claude and causes 401s on the next run. So on every
-  // startup, if `linked` isn't already a symlink resolving to `cred`, recreate it.
+  // `linked` debe ser un symlink a las credenciales VIVAS. El agente puede refrescar
+  // el token OAuth reemplazando el symlink por un fichero regular (pronto obsoleto),
+  // lo que desincroniza auth de ~/.claude y causa 401s en la siguiente ejecución.
+  // Se asegura de forma atómica: intento directo de crear el symlink y solo ante
+  // EEXIST se verifica el destino y se recrea si apunta mal. Sin ventana TOCTOU
+  // entre comprobar y recrear donde otro proceso cuele un symlink.
+  try {
+    symlinkSync(cred, linked);
+    return dir;
+  } catch (e: any) {
+    // Carrera u otro error al crear — si no es EEXIST no se rompe el arranque.
+    if (e?.code !== "EEXIST") return dir;
+  }
+  // Ya existe algo en `linked`: solo se recrea si no es el symlink correcto.
   let linked_ok = false;
   try { linked_ok = lstatSync(linked).isSymbolicLink() && realpathSync(linked) === realpathSync(cred); } catch { linked_ok = false; }
   if (!linked_ok) {
     try { rmSync(linked, { force: true }); } catch { /* ignore */ }
-    try { symlinkSync(cred, linked); } catch { /* race or already linked — ignore */ }
+    try { symlinkSync(cred, linked); } catch { /* carrera — ignora */ }
   }
   return dir;
 }

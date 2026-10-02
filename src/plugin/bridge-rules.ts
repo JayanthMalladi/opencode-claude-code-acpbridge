@@ -12,7 +12,7 @@
 // rules whose `action` is the wildcard are IGNORED. V2's defaults start with
 // `*: allow`, which would silently auto-approve every native Claude tool; the V1
 // behaviour (and the safe one for a bridged agent) is to ask.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -35,12 +35,25 @@ let always: Record<string, BridgeRule[]> | undefined;
 
 function loadAlways(): Record<string, BridgeRule[]> {
   if (always) return always;
-  try {
-    always = existsSync(FILE) ? (JSON.parse(readFileSync(FILE, "utf8")) as Record<string, BridgeRule[]>) : {};
-  } catch {
-    always = {};
-  }
+  always = readAlwaysDisk();
   return always;
+}
+
+/** Lectura directa desde disco (sin caché) — base del merge-on-read. */
+function readAlwaysDisk(): Record<string, BridgeRule[]> {
+  try {
+    return existsSync(FILE) ? (JSON.parse(readFileSync(FILE, "utf8")) as Record<string, BridgeRule[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Escritura atómica (tmp + rename en el mismo filesystem): nunca deja FILE a medias. */
+function atomicWriteJson(data: unknown): void {
+  mkdirSync(DIR, { recursive: true });
+  const tmp = `${FILE}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data));
+  renameSync(tmp, FILE);
 }
 
 /** Publish an agent's rules (replaces the previous snapshot for that agent). */
@@ -56,12 +69,17 @@ export function agentRules(agentID: string): readonly BridgeRule[] {
 /** Persist an "always allow" decision for one (agent, tool, target). Idempotent. */
 export function addAlwaysRule(agentID: string, action: string, resource: string): void {
   try {
-    const all = loadAlways();
+    // Merge-on-read: se relee el fichero en cada escritura para no perder las
+    // reglas que otro proceso OpenCode haya guardado tras cargar la caché.
+    const all = readAlwaysDisk();
     const list = (all[agentID] ??= []);
-    if (list.some((r) => r.action === action && r.resource === resource)) return;
+    if (list.some((r) => r.action === action && r.resource === resource)) {
+      always = all;
+      return;
+    }
     list.push({ action, resource, effect: "allow" });
-    mkdirSync(DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify(all));
+    atomicWriteJson(all);
+    always = all;
   } catch {
     /* best-effort: a lost rule only means asking one more time next run */
   }

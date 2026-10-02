@@ -47,6 +47,9 @@ const note = (m: string) => process.stderr.write(`[acp] ${m}\n`);
 const MAX_LIVE_SESSIONS = 8;
 /** Cap on a foreign tool-result replayed as text during catch-up. */
 const CATCHUP_RESULT_CHARS = 2000;
+/** Tope del buffer `pending` (chunks emitidos sin controller vivo): sin cap un turno
+ *  largo con el stream cerrado lo haría crecer sin límite (OOM). */
+const MAX_PENDING_PARTS = 1000;
 /** System-prompt blocks worth forwarding to the agent as FACTUAL context (never as
  *  a system prompt — that would make Anthropic bill the session as extra usage). */
 const CONTEXT_TAGS = ["env", "available_references"];
@@ -111,7 +114,10 @@ interface TurnState {
   pendingPermissions: Map<string, (verdict: PermissionVerdict) => void>;
   textId: string | null;
   reasoningId: string | null;
-  cancelWatchdog: ReturnType<typeof setTimeout> | null;
+  /** Watchdogs armados por `onCancel` ignorados. Van en un `Set` para que pausas
+   *  repetidas no acumulen timers huérfanos: `clearCancelWatchdog` los barre todos
+   *  y cada timer se da de baja al disparar. */
+  cancelWatchdogs: Set<ReturnType<typeof setTimeout>>;
   lastActive: number;
 }
 
@@ -203,7 +209,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   async doStream(
     options: LanguageModelV3CallOptions,
   ): Promise<{ stream: ReadableStream<LanguageModelV3StreamPart>; warnings: never[] }> {
-    const continuation = this.detectContinuation(options.prompt);
+    const continuation = this.detectContinuation(options.prompt, options);
     const ref: TurnRef = { t: continuation?.t ?? null };
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start: (controller) => void this.onStart(controller, options, continuation, ref),
@@ -439,7 +445,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         pendingPermissions: new Map(),
         textId: null,
         reasoningId: null,
-        cancelWatchdog: null,
+        cancelWatchdogs: new Set(),
         lastActive: Date.now(),
       };
       ref.t = t;
@@ -478,6 +484,12 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       try { t.controller.enqueue(part); return; } catch { /* closed underneath us */ }
     }
     t.pending.push(part);
+    // Cap anti-OOM: con el controller cerrado mucho rato `pending` crecería sin
+    // límite — se descartan los chunks más antiguos.
+    if (t.pending.length > MAX_PENDING_PARTS) {
+      t.pending.splice(0, t.pending.length - MAX_PENDING_PARTS);
+      dbg(`pending desbordado (>${MAX_PENDING_PARTS}) — descartados los más antiguos`);
+    }
   }
 
   private flushPending(t: TurnState) {
@@ -527,7 +539,15 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     dbg(`agent → tool-call ${call.name} (${call.toolCallId}) → emit to OpenCode`);
     this.closeBlocks(t);
     t.pendingTools.add(call.toolCallId);
-    const inputJson = JSON.stringify(call.args ?? {});
+    // `call.args` puede traer refs circulares/BigInt → JSON.stringify lanzaría y
+    // tumbaría el turno: degradar a marcador en vez de crashear.
+    let inputJson: string;
+    try {
+      inputJson = JSON.stringify(call.args ?? {});
+    } catch (e) {
+      dbg(`tool-call ${call.name}: args no serializables (${e instanceof Error ? e.message : String(e)}) — input="<serialization error>"`);
+      inputJson = '"<serialization error>"';
+    }
     this.emit(t, { type: "tool-input-start", id: call.toolCallId, toolName: call.name });
     this.emit(t, { type: "tool-input-delta", id: call.toolCallId, delta: inputJson });
     this.emit(t, { type: "tool-input-end", id: call.toolCallId });
@@ -588,8 +608,8 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
    *  the `question` tool-result (resolved in onStart's continuation branch). */
   private onRequestPermission(params: any): Promise<{ outcome: any }> {
     const t = this.byAcpSession.get(String(params?.sessionId ?? ""));
-    // No live turn/controller → approve so the agent never hangs.
-    if (!t || !t.controller) return Promise.resolve(this.permOutcome(params, true));
+    // Sin turno vivo (crash/reinicio) — denegar es más seguro que aprobar a ciegas.
+    if (!t || !t.controller) return Promise.resolve(this.permOutcome(params, false));
     const toolCall = params?.toolCall;
     const native = this.permToolName(toolCall);
     const target = this.bridgeTarget(toolCall);
@@ -760,14 +780,24 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   }
 
   /** Per-call provider options: V2 nests them under `providerOptionKey(package,
-   *  providerID)` = the providerID, but a canonical/custom id would key them
-   *  differently → fall back to the first object entry so any registration works. */
+   *  providerID)` = the providerID. El fallback al primer objeto del mapa sería
+   *  voraz (podría tomar opciones de OTRO provider): solo se acepta si la key
+   *  contiene nuestro provider id (`acp`) o el objeto trae forma conocida
+   *  (ocSession/ocAgent/resumeId/…/mode/effort/native*); si no, como ausente. */
   private providerOptions(options: LanguageModelV3CallOptions): Record<string, any> {
     const all = (options.providerOptions ?? {}) as Record<string, unknown>;
     const own = all[this.provider];
     if (own && typeof own === "object") return own as Record<string, any>;
-    for (const value of Object.values(all)) {
-      if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>;
+    const SHAPE_KEYS = new Set([
+      "ocSession", "ocAgent", "resumeId", "resumeLen", "resumeConvKey", "resumeLastUsage",
+      "mode", "effort", "thinking", "systemPromptMode", "forwardEnvContext",
+      "tools", "allowedTools", "disallowedTools", "settingSources", "strictMcpConfig",
+      "nativeTools", "resourceSearch", "nativeSubagents", "nativeSkills", "projectMemory", "skillShell",
+    ]);
+    for (const [key, value] of Object.entries(all)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      if (String(key).toLowerCase().includes(this.provider)) return value as Record<string, any>;
+      if (Object.keys(value).some((k) => SHAPE_KEYS.has(k) || k.startsWith("native"))) return value as Record<string, any>;
     }
     return {};
   }
@@ -827,7 +857,12 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   private ensureConnected(): Promise<void> {
     if (this.connection) return Promise.resolve();
     if (this.connecting) return this.connecting;
-    this.connecting = this.connect();
+    // Si `connect()` lanza, `connecting` debe resetearse: si no, todos los
+    // `ensureConnected()` futuros reutilizarían la promesa rechazada y colgarían.
+    this.connecting = this.connect().then(
+      () => undefined,
+      (err) => { this.connecting = null; throw err; },
+    );
     return this.connecting;
   }
 
@@ -913,16 +948,20 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
    *  force teardown so the agent doesn't stay blocked. Cleared by a continuation. */
   private armCancelWatchdog(t: TurnState) {
     this.clearCancelWatchdog(t);
-    t.cancelWatchdog = setTimeout(() => {
-      t.cancelWatchdog = null;
+    const timer = setTimeout(() => {
+      t.cancelWatchdogs.delete(timer);
       dbg("cancel watchdog fired — no continuation arrived; tearing down");
       this.endTurn(t);
     }, this.config.streamCloseTimeoutMs ?? 600_000);
-    t.cancelWatchdog.unref?.();
+    timer.unref?.();
+    t.cancelWatchdogs.add(timer);
   }
 
+  /** Barre TODOS los watchdogs del turno (cada `onCancel` ignorado arma uno);
+   *  llamado desde endTurn/cleanup y al continuar el turno. */
   private clearCancelWatchdog(t: TurnState) {
-    if (t.cancelWatchdog) { clearTimeout(t.cancelWatchdog); t.cancelWatchdog = null; }
+    for (const timer of t.cancelWatchdogs) clearTimeout(timer);
+    t.cancelWatchdogs.clear();
   }
 
   cleanup() {
@@ -1008,7 +1047,11 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     let i = 0;
     while (i < sent.length && i < keys.length && sent[i] === keys[i]) i++;
     if (i === sent.length) return { kind: "append", fromIndex: i };
-    if (i === keys.length) return { kind: "revert", fromIndex: i };
+    // Prefijo estricto = revert SOLO si incoming es más corto; si son iguales no hay
+    // mensajes nuevos → append desde el final (evita falsos revert).
+    if (i === keys.length) return keys.length < sent.length
+      ? { kind: "revert", fromIndex: i }
+      : { kind: "append", fromIndex: keys.length };
     return { kind: "diverged", fromIndex: i };
   }
 
@@ -1146,9 +1189,22 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   }
 
   /** Find the live conversation whose deferred tool-calls/permissions this prompt
-   *  answers. Scoped per session, so two concurrent chats can't cross-resolve. */
-  private detectContinuation(prompt: LanguageModelV3CallOptions["prompt"]): Continuation | null {
-    for (const t of this.sessions.values()) {
+   *  answers. Acotado a la conversación actual (`ocSession`/convKey de ESTA llamada):
+   *  iterar todas las sesiones cruzaba continuaciones de chats concurrentes. */
+  private detectContinuation(
+    prompt: LanguageModelV3CallOptions["prompt"],
+    options?: LanguageModelV3CallOptions,
+  ): Continuation | null {
+    let candidates: Array<TurnState | undefined>;
+    if (options) {
+      const po = this.providerOptions(options);
+      const baseKey = typeof po.ocSession === "string" ? po.ocSession : hashText(this.firstUserText(prompt));
+      candidates = [this.sessions.get(baseKey), this.sessions.get(`${baseKey}:notools`)];
+    } else {
+      candidates = [...this.sessions.values()];
+    }
+    for (const t of candidates) {
+      if (!t) continue;
       if (t.pendingTools.size === 0 && t.pendingPermissions.size === 0) continue;
       const results: Array<{ toolCallId: string; result: unknown; output: any }> = [];
       for (const msg of prompt) {
@@ -1173,13 +1229,23 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
 
   /** Approve a bridged permission ONLY on an explicit positive answer to the
    *  `question` dialog. Errors, dismissals, and any ambiguous output (including
-   *  a typed-in answer) fail CLOSED so an unclear verdict never runs the tool. */
+   *  a typed-in answer) fail CLOSED so an unclear verdict never runs the tool.
+   *  Verificado: OpenCode V2 no expone identificador estable (sin schema de la tool
+   *  `question` en node_modules/@opencode-ai ni en /opt/OpenCode/resources; el shape
+   *  documentado es etiqueta en `{ answers: [["…"]] }` o texto renderizado) → match
+   *  por etiqueta normalizada (minúsculas, trim, "_" y espacios colapsados) con
+   *  fallback deny ante cualquier cosa no reconocida. Flujo de 3 opciones intacto. */
   private questionVerdict(output: any): PermissionVerdict {
     if (this.isErrorOutput(output)) return { approved: false, always: false };
-    const answer = this.answerLabel(output).toLowerCase();
+    const answer = this.normalizeAnswer(this.answerLabel(output));
     if (answer.includes("always allow")) return { approved: true, always: true };
     if (answer.includes("allow once")) return { approved: true, always: false };
     return { approved: false, always: false };
+  }
+
+  /** Normaliza una etiqueta de respuesta para el match robusto. */
+  private normalizeAnswer(s: string): string {
+    return String(s ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   }
 
   /** The chosen label: typed output (`{ answers: [["Always allow"]] }`) first,
@@ -1188,8 +1254,14 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     const answers = output?.value?.answers;
     if (Array.isArray(answers)) {
       const first = answers[0];
-      if (Array.isArray(first)) return String(first[0] ?? "");
-      if (typeof first === "string") return first;
+      const cand = Array.isArray(first) ? first[0] : first;
+      if (typeof cand === "string") return cand;
+      // Por si OpenCode V2 tipa la respuesta algún día (objeto con optionId/id
+      // estable): preferir el identificador antes que el texto renderizado.
+      if (cand && typeof cand === "object") {
+        const stable = (cand as any).label ?? (cand as any).value ?? (cand as any).text ?? (cand as any).optionId ?? (cand as any).id;
+        if (typeof stable === "string") return stable;
+      }
     }
     return this.outputToText(output);
   }

@@ -3,7 +3,7 @@
 // synced: when OpenCode resumes a session (new process), the provider can call
 // `resumeSession(acpSessionId)` instead of replaying the whole history → saves
 // tokens. The OpenCode id is only a KEY here; the agent id is what gets resumed.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -47,6 +47,15 @@ function readAll(): Record<string, SessionLink> {
   }
 }
 
+/** Escritura atómica (tmp + rename en el mismo filesystem): el fichero nunca
+ *  queda truncado a medias aunque varios procesos OpenCode escriban a la vez. */
+function atomicWriteJson(data: Record<string, SessionLink>): void {
+  mkdirSync(DIR, { recursive: true });
+  const tmp = `${FILE}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data));
+  renameSync(tmp, FILE);
+}
+
 /** Lookup the agent session linked to an OpenCode sessionID (undefined if none). */
 export function getLink(ocSession: string): SessionLink | undefined {
   return readAll()[ocSession];
@@ -67,7 +76,7 @@ export function setLink(ocSession: string, acpSessionId: string, sentHistoryLen:
       ...(prev?.lastUsage ? { lastUsage: prev.lastUsage } : {}),
       ...(convKey ? { convKey } : {}),
     };
-    writeFileSync(FILE, JSON.stringify(all));
+    atomicWriteJson(all);
   } catch {
     /* best-effort: a missing registry just means resume won't kick in */
   }
@@ -82,8 +91,7 @@ export function clearLink(ocSession: string): boolean {
     const all = readAll();
     if (!all[ocSession]) return false;
     delete all[ocSession];
-    mkdirSync(DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify(all));
+    atomicWriteJson(all);
     return true;
   } catch {
     return false;
@@ -99,7 +107,7 @@ export function updateUsage(ocSession: string, lastUsage: AcpUsageSnapshot): voi
     const entry = all[ocSession];
     if (!entry) return;
     all[ocSession] = { ...entry, lastUsage, ts: Date.now() };
-    writeFileSync(FILE, JSON.stringify(all));
+    atomicWriteJson(all);
   } catch {
     /* best-effort, same policy as setLink */
   }

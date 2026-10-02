@@ -12,6 +12,10 @@ const DEBUG = !!process.env.ACP_DEBUG;
 const dbg = (m: string) => { if (DEBUG) process.stderr.write(`[acp-plugin] ${m}\n`); };
 const DISCOVERY_TTL = 60 * 60 * 1000; // 1h
 
+/** Registro del provider en vuelo por providerId: si la config recarga dos veces
+ *  en paralelo, la segunda reutiliza la promesa en vez de correr check+add en carrera. */
+const providerRegisterInflight = new Map<string, Promise<unknown>>();
+
 function hash(s: string): string {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
@@ -22,12 +26,24 @@ function isPlainObject(v: any): v is Record<string, any> {
   return v != null && typeof v === "object" && !Array.isArray(v);
 }
 
-/** Deep merge where `override` wins (arrays/scalars replace; plain objects recurse). */
+/** Clon profundo de valores (arrays / plain objects recursivos; escalares tal cual). */
+function cloneValue<T>(v: T): T {
+  if (Array.isArray(v)) return v.map(cloneValue) as T;
+  if (isPlainObject(v)) {
+    const o: Record<string, any> = {};
+    for (const k of Object.keys(v)) o[k] = cloneValue((v as any)[k]);
+    return o as T;
+  }
+  return v;
+}
+
+/** Deep merge where `override` wins (arrays/scalars replace; plain objects recurse).
+ *  Clona la estructura fusionada para no compartir referencias anidadas con `base`. */
 function deepMerge(base: any, override: any): any {
-  if (!isPlainObject(base) || !isPlainObject(override)) return override;
-  const out: Record<string, any> = { ...base };
+  if (!isPlainObject(base) || !isPlainObject(override)) return cloneValue(override);
+  const out: Record<string, any> = cloneValue(base);
   for (const k of Object.keys(override)) {
-    out[k] = k in base ? deepMerge(base[k], override[k]) : override[k];
+    out[k] = k in base ? deepMerge(base[k], override[k]) : cloneValue(override[k]);
   }
   return out;
 }
@@ -74,6 +90,9 @@ const NATIVE_BASE: Record<string, any> = {
  *  provider per call through the `context` hook (merged with `options.agents.<name>.options`). */
 function agentDefs(opts: Record<string, any>): Record<string, any> {
   if (opts.agents && opts.agents !== true && isPlainObject(opts.agents)) return opts.agents;
+  if (opts.agents && opts.agents !== true && !isPlainObject(opts.agents)) {
+    dbg("agents config inválida — usando defaults");
+  }
   return {
     "claude-code": {
       name: "Claude Code",
@@ -111,6 +130,21 @@ function modelRef(value: any, providerID: string, variant?: string) {
  * `claude-code` / `claude-code-plan` agents, and bridges every per-request value
  * (session link, agent options) through the `context` hook.
  */
+/** ¿Está la tool `question` en el set de tools del agente? Soporta array / Set /
+ *  Record (según cómo OpenCode lo haya convertido); sin info se asume que sí
+ *  para conservar el comportamiento actual. */
+function hasQuestionTool(item: any): boolean {
+  const t = (item as any)?.tools;
+  if (t == null) return true;
+  if (Array.isArray(t)) return (t as any[]).includes("question");
+  if (t instanceof Set) return (t as Set<unknown>).has("question");
+  if (typeof t === "object") {
+    if ("question" in t) return !!(t as any).question;
+    return true;
+  }
+  return true;
+}
+
 export const ACPPlugin = Plugin.define({
   id: "opencode-claude-code-acpbridge",
   async setup(ctx) {
@@ -142,22 +176,36 @@ export const ACPPlugin = Plugin.define({
 
         // The provider no longer comes from `provider.<id>` in config (V2 resolves
         // packages through `aisdk:<spec>`): the plugin registers it directly.
-        await ctx.provider.transform((editor) => {
-          if (editor.get(providerId)) {
-            dbg(`provider '${providerId}' already declared — keeping the existing definition`);
-            return;
-          }
-          editor.add({
-            info: {
-              ...Provider.Info.empty(Provider.ID.make(providerId)),
-              name: opts.name ?? "Claude Code (ACP)",
-              activation: "enabled",
-              package: `aisdk:${npmSpec}`,
-              settings: { ...discOpts },
-            },
-            models,
+        // Guard contra reloads paralelos: el check `get` + `add` no es atómico,
+        // así que se memoiza la promesa en vuelo por providerId y se reutiliza.
+        let registering = providerRegisterInflight.get(providerId);
+        if (!registering) {
+          const fresh = ctx.provider.transform((editor) => {
+            if (editor.get(providerId)) {
+              dbg(`provider '${providerId}' already declared — keeping the existing definition`);
+              return;
+            }
+            editor.add({
+              info: {
+                ...Provider.Info.empty(Provider.ID.make(providerId)),
+                name: opts.name ?? "Claude Code (ACP)",
+                activation: "enabled",
+                package: `aisdk:${npmSpec}`,
+                settings: { ...discOpts },
+              },
+              models,
+            });
           });
-        });
+          providerRegisterInflight.set(providerId, fresh);
+          // Solo se memoiza mientras está en vuelo: al asentarse se libera para
+          // que la próxima recarga (secuencial) use su propio `ctx`.
+          const done = () => {
+            if (providerRegisterInflight.get(providerId) === fresh) providerRegisterInflight.delete(providerId);
+          };
+          fresh.then(done, done);
+          registering = fresh;
+        }
+        await registering;
         dbg(`auto-registered provider '${providerId}' (aisdk:${npmSpec}) — models: ${models.map((m) => m.id).join(", ")}`);
 
         if (opts.agents !== false) {
@@ -181,7 +229,11 @@ export const ACPPlugin = Plugin.define({
                 if (def.name) item.name = Agent.Name.make(def.name);
                 if (description && !item.description) item.description = description;
                 if (!item.model) item.model = model;
-                if (!item.permissions.some((r) => r.action === "question" && r.resource === "*")) {
+                // Solo tiene sentido permitir `question` si la tool existe en el agente.
+                if (
+                  hasQuestionTool(item) &&
+                  !item.permissions.some((r) => r.action === "question" && r.resource === "*")
+                ) {
                   item.permissions.push(questionRule);
                 }
                 // Publish the rules the permission bridge evaluates against (the
