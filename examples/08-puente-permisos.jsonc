@@ -1,32 +1,50 @@
 {
-  // Puente de permisos: el agente `claude-code` usa tools NATIVAS de Claude (Skill,
-  // Read, NotebookEdit, subagentes) y CADA acción nativa pide permiso vía el `ask`
-  // de OpenCode. Aquí ajustas QUÉ pide permiso y qué features nativos van activos,
-  // sin tocar el código del plugin (tu config gana por merge).
+  // Puente de permisos (OpenCode V2): el agente `claude-code` usa tools NATIVAS
+  // de Claude (Skill, Read, NotebookEdit, subagentes) y CADA acción nativa pasa
+  // por el puente. Aquí ajustas QUÉ pide permiso y qué features nativos van
+  // activos, sin tocar el código del plugin (tu config gana por merge).
+  //
+  // El puente YA NO usa la meta-tool `claude_permission`: el provider emite un
+  // tool-call de la tool NATIVA `question` de OpenCode. El diálogo se titula
+  // `Permission` y ofrece `Allow once` / `Always allow` / `Deny`. Las reglas
+  // `allow`/`deny` se resuelven SIN diálogo; `Always allow` persiste la regla
+  // en `~/.acp-model-provider/always.json`.
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
-  ],
-  "agent": {
-    "claude-code": {
-      // Reglas de permiso POR TOOL NATIVA — el prompt se titula con la tool (Read/Skill/…).
-      // El PATTERN es la acción (comando / skill / ruta), así que admite GLOBS.
-      // Sin regla que matchee → "ask" (el default seguro).
-      "permission": {
-        "Read": "allow",                 // lecturas nativas (multimodal): permitir siempre
-        "Skill": { "*": "allow" },        // cualquier skill: permitir
-        "NotebookEdit": "ask",            // editar notebooks Jupyter: preguntar
-        "*": "ask"                        // cualquier otra tool nativa: preguntar
-        // claude_permission queda "allow" (es la meta-tool puente; el ask real lo
-        // levanta ella con el nombre de la tool nativa de arriba).
-      },
-      // Toggles de features nativos (todos ON por defecto). Descomenta para cambiar:
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge",
       "options": {
-        // "nativeSkills": ["pdf", "xlsx"],   // precargar solo estos skills (en vez de todo ~/.claude/skills)
-        // "nativeSubagents": false,          // desactivar los subagentes nativos de Claude
-        // "nativeTools": ["NotebookEdit", "Read", "WebSearch"],  // exponer otra tool nativa de nicho
-        // "mode": "bypassPermissions"        // volver al "cerebro limpio" clásico (sin puente)
-      }
+        "command": "claude-agent-acp",
+        // Toggles de features nativos (todos ON por defecto). Descomenta para cambiar:
+        "agents": {
+          "claude-code": {
+            "options": {
+              // "nativeSkills": ["pdf", "xlsx"],   // precargar solo estos skills (en vez de todo ~/.claude/skills)
+              // "nativeSubagents": false,          // desactivar los subagentes nativos de Claude
+              // "nativeTools": ["NotebookEdit", "Read", "WebSearch"],  // exponer otra tool nativa de nicho
+              // "mode": "bypassPermissions"        // volver al "cerebro limpio" clásico (sin puente)
+            }
+          }
+        }
+      } }
+  ],
+  "agents": {
+    "claude-code": {
+      // Reglas del puente POR TOOL NATIVA — salen de `agents.<n>.permissions`
+      // (ruleset V2) vía `bridge-rules.ts`. El `resource` admite GLOBS.
+      // Regla `allow`/`deny` → sin diálogo; sin regla que matchee → diálogo
+      // (fail-closed).
+      "permissions": [
+        { "action": "Read",         "resource": "*", "effect": "allow" },  // lecturas nativas (multimodal): permitir siempre
+        { "action": "Skill",        "resource": "*", "effect": "allow" },  // cualquier skill: permitir
+        { "action": "NotebookEdit", "resource": "*", "effect": "ask" }     // editar notebooks Jupyter: preguntar
+        // El `"*": "ask"` de V1 NO se puede declarar: el puente IGNORA
+        // `action:"*"` a propósito. El default del puente ya es preguntar
+        // (fail-closed) para cualquier tool nativa sin regla.
+        // La regla `{action:"question", resource:"*", effect:"allow"}` la
+        // AÑADE EL PLUGIN SOLO — no la declares aquí.
+      ]
+      // Los toggles de features nativos viven en
+      // `plugins[0].options.agents.claude-code.options` (ver arriba).
     }
   }
 }

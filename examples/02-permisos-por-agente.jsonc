@@ -1,29 +1,34 @@
 {
-  // Filtrar/controlar las herramientas del agente vía PERMISOS de OpenCode,
-  // sin tocar el código del plugin. Tu sección `agent` tiene precedencia (merge):
-  // declaras solo `permission` y heredas model/mode/options del plugin.
+  // Filtrar/controlar las herramientas del agente vía PERMISOS de OpenCode V2
+  // (ruleset), sin tocar el código del plugin. Tu sección `agents` tiene
+  // precedencia: declaras solo `permissions` y heredas model/options del plugin.
+  // El ruleset también alimenta el PUENTE de permisos (reglas allow/deny
+  // resuelven las tools nativas de Claude sin diálogo).
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ],
-  "agent": {
+  "agents": {
     "claude-code": {
       // Read-only "duro": deniega escritura y shell, permite lectura/búsqueda/web.
-      "permission": {
-        "edit": "deny",
-        "write": "deny",
-        "bash": "deny",
-        "read": "allow",
-        "grep": "allow",
-        "glob": "allow",
-        "webfetch": "allow"
-      }
+      "permissions": [
+        { "action": "edit",  "resource": "*", "effect": "deny" },
+        { "action": "write", "resource": "*", "effect": "deny" },
+        { "action": "bash",  "resource": "*", "effect": "deny" },
+        { "action": "read",  "resource": "*", "effect": "allow" },
+        { "action": "grep",  "resource": "*", "effect": "allow" },
+        { "action": "glob",  "resource": "*", "effect": "allow" },
+        { "action": "webfetch", "resource": "*", "effect": "allow" }
+      ]
     },
     "claude-code-plan": {
       // El agente de plan: pedir confirmación para todo lo demás.
-      "permission": { "edit": "deny", "bash": "ask" }
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "bash", "resource": "*", "effect": "ask" }
+      ]
     }
   }
-  // Nota: las tools se ejecutan en OpenCode; estos permisos son la forma
+  // Nota: las tools se ejecutan en OpenCode; este ruleset es la forma
   // recomendada de acotarlas.
 }

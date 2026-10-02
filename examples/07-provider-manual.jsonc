@@ -1,11 +1,14 @@
 {
-  // Control total: declaras el provider `acp` a mano (sin auto-registro). El
-  // plugin RESPETA un `provider.acp` ya declarado y no lo toca. Útil para fijar
-  // exactamente los modelos, costes y límites, o en entornos sin descubrimiento.
+  // Control total: declaras el provider `acp` a mano en la config de OpenCode.
+  // En V2 normalmente NO hace falta: con `options.command` el plugin
+  // auto-registra el provider (V2 resuelve el paquete como `aisdk:<spec>`).
+  // Declararlo a mano sirve para fijar modelos, costes y límites exactos, o en
+  // entornos sin descubrimiento. El plugin DETECTA `provider.acp` declarado y
+  // NO lo toca (guard nuevo).
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "acp": {
-      "npm": "opencode-claude-code-acpbridge",            // en dev: "file:///ruta/a/opencode-claude-code-acpbridge"
+      "npm": "opencode-claude-code-acpbridge",   // en dev: RUTA DEL DIRECTORIO local (no `file://`)
       "name": "Claude Code (ACP)",
       "options": {
         "command": "claude-agent-acp",
@@ -30,9 +33,10 @@
       }
     }
   },
-  // El plugin se sigue cargando para inyectar los agentes y el hook chat.params
-  // (resume); como provider.acp ya existe, no lo reescribe.
-  "plugin": [
-    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
+  // El plugin se sigue cargando para inyectar los agentes y el context hook
+  // (`session.hook("context")`: sessionID/resume + options por agente);
+  // como `provider.acp` ya existe, no lo reescribe.
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ]
 }

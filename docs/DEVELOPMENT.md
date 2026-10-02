@@ -9,7 +9,7 @@ Guía de arquitectura interna, flujos y cómo extender el paquete. Para uso, ver
 Un único paquete npm que OpenCode carga como **dos cosas a la vez**:
 
 - **Provider** (`createACPModelProvider`) — implementa `LanguageModelV3` (Vercel AI SDK). Por debajo es un **cliente ACP** que spawnea `claude-agent-acp` (Claude Code).
-- **Plugin** (`export default { id, server }`) — hooks de OpenCode que **auto-registran** el provider y los agentes, y puentean el `sessionID`.
+- **Plugin** (`export default Plugin.define({ id, setup })`, API V2 promise) — registra el provider y los agentes por transform, inyecta el `sessionID` y las opciones por llamada por el hook `context`, y limpia el enlace de sesión en los eventos `session.revert.*`. El entrypoint de desarrollo local es `index.js` (raíz): `Host.resolve` de OpenCode busca `<dir>/index.*` cuando el destino del plugin es un directorio.
 
 El principio rector es **"OpenCode orquesta"**: el agente Claude solo **razona y propone** llamadas a herramientas; **OpenCode las ejecuta** (con sus permisos y TUI) y reinyecta el resultado. Para lograrlo, al agente se le **desactivan sus herramientas nativas** (`tools: []`) y se le exponen **las de OpenCode** mediante un MCP server sintético.
 
@@ -20,11 +20,15 @@ El principio rector es **"OpenCode orquesta"**: el agente Claude solo **razona y
 ```
                  ┌───────────────────────── proceso OpenCode ─────────────────────────┐
                  │                                                                     │
- OpenCode  ──────┼─►  Plugin (hooks)                Provider (LanguageModelV3)         │
-  (TUI/run)      │      • config: inyecta             • doStream(prompt, tools)        │
-                 │        cfg.provider + cfg.agent     • ACPOrchestratorModel           │
-                 │      • chat.params: sessionID ─────► providerOptions.acp             │
-                 │                                        │                             │
+ OpenCode  ──────┼─►  Plugin (V2)                   Provider (LanguageModelV3)          │
+  (TUI/run)      │      • provider.transform:          • doStream(prompt, tools)        │
+                 │      • registra provider acp        • ACPOrchestratorModel           │
+                 │      • agent.transform:             sesión ACP persistente           │
+                 │          claude-code + reglas ─────► providerOptions.acp             │
+                 │      • session.hook("context"): ◄── ocSession/ocAgent/resume*        │
+                 │          sessionID + opciones ─────► + mode/effort por agente        │
+                 │      • event: session.revert.* → clearLink (replay si diverge)       │
+                 │                                      │                               │
                  │                              McpHost (TCP) ◄── tools de OpenCode     │
                  │                                        │ getServerConfig()           │
                  └────────────────────────────────────────┼────────────────────────────┘
@@ -71,15 +75,18 @@ MCP server **stdio sin dependencias** (solo `node:net`/`node:readline`) que el a
 `ClaudeCodeControl` (tipo) + `buildClaudeCodeOptions` (→ `_meta.claudeCode.options`) + `resolveConfigDir`/`prepareIsolatedConfigDir`. El **"cerebro limpio"** por defecto: `tools:[]`, `settingSources:[]`, `strictMcpConfig:true` (sin connectors claude.ai), y un `CLAUDE_CONFIG_DIR` aislado con `~/.claude/.credentials.json` **symlinkeado** (auth sin heredar el ecosistema). `prepareIsolatedConfigDir` **re-enlaza el symlink en cada arranque**: el agente puede reemplazarlo con un archivo obsoleto al refrescar el token → 401; re-linkear lo mantiene sincronizado con `~/.claude`.
 **Toggles de features nativos** (componen `tools`/`settingSources`/`agents`/`settings`; con todos off = cerebro limpio, cero regresión): `nativeTools`, `resourceSearch`, `nativeSubagents` (→ `DEFAULT_SUBAGENT` que delega a OpenCode), `nativeSkills`, `projectMemory`, `skillShell`, `allowedTools`. Un override crudo (`ctrl.tools`/`ctrl.settingSources`) **gana** sobre la composición.
 
-### `plugin/index.ts`
-- Hook **`config(cfg)`**: descubre modelos (con caché), construye la metadata y **muta** `cfg.provider.acp` y `cfg.agent` (auto-registro). `deepMerge` da precedencia a los agentes que el usuario declaró.
-- Hook **`chat.params`**: inyecta `providerOptions.acp.{ocSession, resumeId, resumeLen}` (el `sessionID` de OpenCode + lo que haya en el registro).
+### `plugin/index.ts` · `bridge-rules.ts`
+- **`provider.transform`**: descubre modelos (con caché TTL), construye `Model.Info[]` (`buildModelsInfo`) y **registra** el provider `acp` (`package: aisdk:<spec>`, `settings` = config del agente ACP). Sin `command` (ni `ACP_COMMAND`) no registra nada y deja declarar el provider a mano.
+- **`agent.transform`**: inyecta `claude-code`/`claude-code-plan`. Solo rellena campos vacíos (`description`, `model`) → idempotente ante replays y respeta la config del usuario; añade `{action:"question", resource:"*", effect:"allow"}` (la tool `question` nativa no duplique diálogo) y **publica** las reglas del puente (`publishAgentRules`).
+- **`session.hook("context")`** (scoped `providerID: acp`): inyecta por llamada `ocSession`/`ocAgent` + `resumeId`/`resumeLen`/`resumeLastUsage`/`resumeConvKey` desde el registro, y las opciones Claude del agente (`plugins[].options.agents.<n>.options`: mode/native*). V2 no pasa provider options desde config: todo lo necesita el hook.
+- **`event.subscribe`**: `session.revert.committed|cleared` → `clearLink` — la sesión ACP recordaría turnos deshechos, así que el siguiente turno arranca en fresco con replay completo.
+- **`bridge-rules.ts`** (módulo compartido plugin↔provider, igual que `sessions.ts`): store de reglas por agente + `always.json` persistente (`~/.acp-model-provider/always.json`). `evaluate()` replica `Permission.evaluate` de V2 con **una diferencia deliberada**: ignora reglas `action:"*"` (los defaults de V2 son `*: allow` y aprobarían toda tool nativa) → default `ask`.
 
 ### `plugin/discover.ts` · `catalog.ts` · `cache.ts` · `sessions.ts`
 - `discover`: conexión ACP **efímera** → `availableModels`/`modes`/`promptCapabilities`.
-- `catalog`: metadata desde `~/.cache/opencode/models.json` (o `models.dev`), `variants` de effort, `default`→opus.
+- `catalog`: metadata desde `~/.cache/opencode/models.json` (o `models.dev`), `variants` de effort, `default`→opus. `buildModels` (CLI/diagnóstico) y `buildModelsInfo` (→ `Model.Info[]` para `provider.transform`).
 - `cache`: cachés TTL en `~/.acp-model-provider/`.
-- `sessions`: registro `sessions.json` (sessionID OpenCode ↔ sessionId ACP).
+- `sessions`: registro `sessions.json` (sessionID OpenCode ↔ sessionId ACP + usage/convKey).
 
 ### `provider/factory.ts` · `env.ts` · `bin/cli.ts`
 Factory del provider (una instancia por `modelId`), config por env vars, y el comando `sync`.
@@ -95,22 +102,26 @@ Factory del provider (una instancia por `modelId`), config por env vars, y el co
 4. OpenCode ejecuta la tool (permisos/TUI) y en el **siguiente `doStream`** trae el `tool-result`.
 5. El provider detecta la continuación, hace `McpHost.resolveToolCall(id, result)` → el `callTool` MCP por fin responde → el agente continúa el mismo turno.
 
-### Sesión: reuse / reset / resume
-- **Reuse** (mismo proceso, misma conversación): envía solo el último mensaje → el agente reaprovecha su prompt cache.
-- **Reset**: cambia conversación/tools/system/cfg → cierra la vieja y crea `newSession` con el historial completo.
-- **Resume** (proceso nuevo): `chat.params` aporta `resumeId` desde `sessions.json`; si el historial creció (no divergió), `unstable_resumeSession(acpSessionId)` reanuda **sin reenviar historial**. Si falla o el historial divergió (compactación/rollback) → `newSession`.
+### Sesión: reuse / reset / resume — mensajes incrementales (requisito central)
+ACP es una sesión viva: el agente recuerda todo lo que ya le enviaste, así que **reenviar la historia entera cada turno quema tokens y rompe el prompt cache** (commit `4a7d7be`, v0.8.0). OpenCode, en cambio, siempre construye el prompt completo; el provider decide qué viaja de verdad:
+
+- **Reuse** (mismo proceso, misma conversación): `sentKeys` guarda una huella por mensaje ya enviado; comparando con el prompt entrante se detecta *append* → se envía **solo la cola** (`hist.slice(fromIndex)`), omitiendo los `tool-call`/`tool-result` propios (prefijo nonce del host: el agente ya los tiene). Cero reenvío, cache intacta.
+- **Resume** (proceso nuevo): el `context` hook aporta `resumeId`/`resumeLen` desde el registro `sessions.json`; si el historial creció sin divergir, `unstable_resumeSession(acpSessionId)` reanuda y `sentKeys = keys.slice(0, resumeLen)` → **sin replay** de lo ya enviado.
+- **Reset**: cambia system/cfg de creación → cierra la vieja y `newSession` con replay completo (necesario: es otra conversación).
+- **Divergencia** (revert/compactación): el prompt ya no es prefijo estricto de `sentKeys`, o el plugin recibe `session.revert.*` → `clearLink` → sesión fresca + replay completo (la sesión ACP recordaría turnos deshechos).
+- **Catch-up** (sesión viva + historia reescrita): se reenvía solo lo no visto, con los ajenos truncados según el rol del mensaje.
 
 ### Modo y esfuerzo por agente
-`cfg.agent.<n>.options` → OpenCode los pasa como `providerOptions.acp` (key = `providerID`, ver `transform.ts` de OpenCode) → `doStream` los lee (`effectiveCtrl`) → `setSessionMode`/`setSessionConfigOption` en caliente.
+`plugins[].options.agents.<n>.options` (V2: `Agent.Info` no tiene `options`, viven en las opciones del plugin) → el `context` hook las vuelca en `event.options` por llamada → V2 las anida como `providerOptions.<providerID>` (key = providerID) → `doStream` las lee (`effectiveCtrl`) → `setSessionMode`/`setSessionConfigOption` en caliente. El esfuerzo elegido como **variante del modelo** (`acp/default#high`) también aterriza ahí (variant.settings); un `effort` explícito del agente gana (request > model defaults). `effort` solo aplica si el modelo expone niveles en `session/configOptions`; si no, warning no fatal.
 
 ### Puente de permisos (tools nativas)
-Cuando el agente está en modo `default` (no `bypassPermissions`) y usa una tool **nativa** (Skill/Read/NotebookEdit/Task), Claude Code llama `requestPermission` (ACP). El provider **no auto-aprueba**: lo difiere y lo enruta a OpenCode reusando el patrón de tool-call diferido.
+Cuando el agente usa una tool **nativa** (Skill/Read/NotebookEdit/ExitPlanMode/…), Claude Code llama `requestPermission` (ACP). El provider **no auto-aprueba**; enruta la decisión en dos pasos:
 
-1. `requestPermission(params)` → `onRequestPermission` guarda un resolver en `TurnState.pendingPermissions` y **emite a OpenCode** un tool-call de la meta-tool **`claude_permission`** (con `{tool, kind, title, input}`), luego `finish` y cierra el controller (igual que `onToolCall`). Devuelve una Promise (el agente espera).
-2. OpenCode ejecuta `claude_permission` (registrada por el plugin); su `execute` hace **`ctx.ask({permission: <tool nativa>, patterns:[target], always:[glob]})`** → **prompt `ask`** mostrando la tool nativa y la acción. Aprobar → `"approved"`; rechazar → `PermissionRejectedError` (tool-error).
-3. El siguiente `doStream` trae el tool-result de `claude_permission`. `detectContinuation`/`onStart` lo distinguen de tool-results MCP (`pendingPermissions` vs `pendingTools`) y resuelven la Promise: **`isApprovedOutput` falla CERRADO** (solo un veredicto explícito "approved" permite; error/ambiguo → deny). El agente ejecuta (o no) la tool nativa.
+1. **Reglas primero** (`evaluate` en `bridge-rules.ts`): con `ocAgent` + tool nativa + target (p. ej. `Bash` + `git *`) busca en las reglas publicadas por `agent.transform` + `always.json` → `allow`/`deny` resuelven **sin diálogo**. Ignora `action:"*"` y default `ask` (fail-safe).
+2. **`ask` → diálogo `question`**: `onRequestPermission` devuelve una Promise pendiente y **emite a OpenCode** un tool-call de la tool nativa **`question`** (`{questions:[{question, header, options:[Allow once, Always allow?, Deny]}]}`), `finish` y cierra el controller (mismo patrón que `onToolCall`). OpenCode ejecuta `question` (por eso los agentes inyectados llevan `{action:"question",resource:"*",effect:"allow"}`) y el diálogo aparece en la TUI.
+3. El siguiente `doStream` trae el tool-result de `question`; `detectContinuation` lo distingue (`pendingPermissions` vs `pendingTools`) y `questionVerdict` lo parsea: etiquetas exactas de output tipado (`{answers:[["Always allow"]]}`) o texto renderizado (`"q"="Always allow"`) → `Always allow` persiste la regla en `always.json` (`addAlwaysRule`); **cualquier cosa ambigua falla CERRADA** (deny), incluido el free-form "type your own answer".
 
-Robustez: `claude_permission` se **filtra del host** (`convertTools`) para que el agente no la vea; `onCancel` **no derriba** la sesión con trabajo diferido en vuelo (era la causa de *host closed* cuando OpenCode pausa para el `ask`) pero arma un **watchdog** que libera si la continuación nunca llega; `endTurn`/reuse **drenan** `pendingPermissions` (deny) para que el agente nunca cuelgue. Las tools comunes van en `allowedTools: ["mcp__opencode"]` (no piden `requestPermission`; OpenCode las orquesta).
+Robustez (heredada de V1): `onCancel` **no derriba** la sesión con permiso diferido en vuelo (OpenCode pausa para el diálogo) pero arma un **watchdog** que libera si la continuación nunca llega; `endTurn`/reuse **drenan** `pendingPermissions` como deny para que el agente nunca cuelgue; sin turno vivo se aprueba (el agent-blocking es peor). Las tools comunes van en `allowedTools: ["mcp__opencode"]` (no piden `requestPermission`; OpenCode las orquesta).
 
 ### Facturación (suscripción vs extra usage)
 Anthropic clasifica la sesión por el **system prompt**: si reenvías el de OpenCode (`append`/`replace`), la trata como app de terceros → *extra usage*; con `preset` (default) usa el preset oficial `claude_code` → **suscripción**. Decidido empíricamente; ver [acp-subscription-billing](../README.md#system-prompt-y-facturación-suscripción-vs-extra-usage).
@@ -124,6 +135,15 @@ npm install
 npm run build            # tsc → dist/
 ACP_DEBUG=1 …            # logs [acp-orchestrator] / [acp-mcp-host] / [acp-plugin] en stderr
 ```
+
+**Smoke test en OpenCode V2** (proyecto de prueba con `.opencode/opencode.json` registrando el plugin por ruta absoluta):
+
+```bash
+cd <proyecto> && ACP_DEBUG=1 opencode --standalone run \
+  --agent claude-code -m acp/default "responde solo: ok"
+```
+
+Verificar en el log: `loading plugin` → `[acp-plugin] auto-registered provider 'acp' … models: …` → `agents registered: claude-code, claude-code-plan` → `> claude-code · default` → `[acp-orchestrator] connected to agent`. Notas: `opencode run` **sin `-m` ignora `agent.model`** (usa el model global de config — comportamiento V2 del CLI); el diálogo `question` del puente requiere TUI interactiva (`opencode --standalone`).
 
 **Scripts de verificación** (`scripts/`, no se publican a npm, requieren `dist/`):
 
@@ -147,7 +167,7 @@ Nota de coste: un prompt real consume de tu suscripción; los spikes de inspecci
 
 ## 6. Extender
 
-- **Nuevos agentes por defecto**: edita el objeto `defs` en el hook `config` (`plugin/index.ts`). Cada entrada `{ description, model, mode, variant, options }`. El usuario siempre puede sobreescribir vía `agent.<n>` en su `opencode.json` (merge).
+- **Nuevos agentes por defecto**: edita `agentDefs()` en `plugin/index.ts`. Cada entrada `{ name, description, model, variant, options }`. El usuario puede sobreescribir con `plugins[].options.agents.<n>` (options con `deepMerge`; description/model solo se rellenan si el usuario no los declaró en `agents.<n>` de config) o declarar el agente completo en `agents:` de config.
 - **Nuevos parámetros por-llamada**: añádelos a `ClaudeCodeControl` y léelos en `effectiveCtrl`; si son runtime, aplícalos en `applySessionConfig` (hay `setSessionMode`, `setSessionConfigOption`, `unstable_setSessionModel`).
 - **Más metadata de modelos**: `catalog.ts` (`buildModels`/`matchCatalog`).
 - **Otro agente ACP** (no Claude Code): el provider es genérico ACP; el comando/exe y el "cerebro limpio" se controlan por `options`. Las partes específicas de Claude están en `claude-config.ts`.

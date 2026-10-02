@@ -3,6 +3,35 @@
 Todas las versiones notables de `opencode-claude-code-acpbridge`. Formato basado en
 [Keep a Changelog](https://keepachangelog.com/); versionado [SemVer](https://semver.org/).
 
+## 0.9.0 — OpenCode V2 (2026-10-01)
+
+Port del plugin y del provider al runtime de plugins **V2** de OpenCode.
+
+### ⚠️ Breaking
+
+- **Runtime de plugins V2**: `Plugin.define({id, setup})` (API con promesas), config
+  `plugins: [{ "package", "options" }]` en lugar de `plugin: [["pkg", {opts}]]`,
+  transforms `provider.transform`/`agent.transform` y `session.hook("context")` en
+  lugar de los hooks V1 `config`/`chat.params`.
+- **Sintaxis de variantes V2** `provider/model#variant` (antes `provider/model:variant`);
+  los agentes pasan a la sección `agents` de la config con el ruleset `permissions`
+  (antes mapa `permission`).
+- **Puente de permisos reescrito**: la meta-tool `claude_permission` desaparece; el
+  provider emite un tool-call de la tool nativa `question` de OpenCode (diálogo
+  `Allow once` / `Always allow` / `Deny`). Las reglas salen de `agents.<n>.permissions`
+  vía `bridge-rules.ts` (fail-closed; `action:"*"` se ignora a propósito). `Always allow`
+  persiste la regla en `~/.acp-model-provider/always.json`.
+- **CLI V2**: `opencode run` sin `-m` ignora `agent.model` (usa el model global de config).
+
+### Added
+
+- **Auto-registro del provider como `aisdk:<spec>`** (con `options.command`); si declaras
+  `provider.<id>` a mano en config, el plugin ya no lo sobreescribe (guard nuevo).
+- **Revert/compactación**: el plugin escucha `session.revert.*` y limpia el enlace de
+  sesión → replay completo cuando la historia diverge.
+- **Entrypoint de directorio local**: `index.js` en la raíz re-exporta `dist/`
+  (`Host.resolve` de V2 busca `<dir>/index.*`); en dev, `package` = ruta de directorio.
+
 ## [0.8.0] — 2026-08-21
 
 Versión centrada en el **coste de tokens** y en la **continuidad de sesión**. La causa

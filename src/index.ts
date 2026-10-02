@@ -55,7 +55,8 @@ export { readACPEnv, ACP_ENV_KEYS } from "./provider/env.js";
 export type { ACPEnvConfig } from "./provider/env.js";
 
 // --- OpenCode plugin --------------------------------------------------------
-// Default export is the `PluginModule { id, server }`. OpenCode's plugin loader
-// uses `default.server` and stops, so it never trips over the `create*` exports.
+// Default export is the V2 plugin definition (`Plugin.define({ id, setup })`);
+// OpenCode's loader validates `default` against `{ id, setup | effect }` and
+// never looks at the `create*` exports, so both halves coexist in one package.
 export { default } from "./plugin/index.js";
 export { ACPPlugin } from "./plugin/index.js";

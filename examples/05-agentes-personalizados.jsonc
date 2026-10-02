@@ -2,18 +2,28 @@
   // Definir TUS propios agentes inyectados (por modelo, por modo), reemplazando
   // los de serie. `options.mode` es el modo ACP; `variant` el esfuerzo.
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["opencode-claude-code-acpbridge", {
-      "command": "claude-agent-acp",
-      // Esta lista REEMPLAZA los agentes por defecto (claude-code / claude-code-plan).
-      // Usa "agents": false para no inyectar ninguno y declararlos todos a mano.
-      "agents": {
-        "cc-opus":   { "model": "default", "variant": "high", "options": { "mode": "bypassPermissions" } },
-        "cc-sonnet": { "model": "sonnet",  "options": { "mode": "bypassPermissions" } },
-        "cc-plan":   { "model": "default", "variant": "high", "options": { "mode": "plan" } }
-      }
-    }]
-  ]
-  // Recuerda: aun así, lo que declares en la sección `agent` de este mismo
-  // fichero gana sobre estas opciones (merge). Ej.: añadir `permission` a "cc-opus".
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge",
+      "options": {
+        "command": "claude-agent-acp",
+        // Esta lista REEMPLAZA los agentes por defecto (claude-code / claude-code-plan).
+        // Usa "agents": false para no inyectar ninguno y declararlos todos a mano
+        // en la sección `agents` de este mismo fichero.
+        "agents": {
+          "cc-opus":   { "model": "default", "variant": "high", "options": { "mode": "default" } },
+          "cc-sonnet": { "model": "sonnet",  "options": { "mode": "default" } },
+          "cc-plan":   { "model": "default", "variant": "high", "options": { "mode": "plan" } }
+        }
+      } }
+  ],
+  // `mode: "primary"` (y permisos) van en la sección `agents` de config V2:
+  "agents": {
+    "cc-opus":   { "mode": "primary" },
+    "cc-sonnet": { "mode": "primary" },
+    "cc-plan":   { "mode": "primary" }
+  }
+  // Recuerda: lo que declares en `agents` manda sobre las defs del plugin
+  // (model/description solo se rellenan si faltan; options hacen merge profundo).
+  // Para "OpenCode es la única autoridad" sin round-trip, usa
+  // "options": { "mode": "bypassPermissions" } (sin puente de permisos).
 }

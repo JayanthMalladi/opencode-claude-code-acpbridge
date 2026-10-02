@@ -7,6 +7,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Model, Provider } from "@opencode/plugin";
 import { readCache, writeCache } from "./cache.js";
 import type { DiscoveredModel } from "./discover.js";
 
@@ -116,4 +117,47 @@ export function buildModels(
     };
   }
   return out;
+}
+
+/**
+ * The same models as `buildModels`, in V2's `Model.Info` shape (what
+ * `ctx.provider.transform`'s editor.add expects). `buildModels` stays for the
+ * CLI/diagnostic path; this is the one the plugin registers.
+ */
+export function buildModelsInfo(
+  agentModels: DiscoveredModel[],
+  promptCaps: Record<string, boolean>,
+  catalog: Record<string, CatalogModel>,
+  providerID: string,
+): Model.Info[] {
+  const pid = Provider.ID.make(providerID);
+  const built = buildModels(agentModels, promptCaps, catalog);
+  return agentModels.map((am) => {
+    const m = built[am.id];
+    const cat = matchCatalog(am.id, catalog);
+    const released = cat?.release_date ? Math.trunc(Date.parse(cat.release_date) / 1000) || 0 : 0;
+    return {
+      ...Model.Info.default(pid, Model.ID.make(m.id)),
+      name: m.name,
+      ...(cat?.family ? { family: Model.Family.make(cat.family) } : {}),
+      capabilities: { tools: !!m.tool_call, input: [...m.modalities.input], output: [...m.modalities.output] },
+      cost: [
+        {
+          input: m.cost.input,
+          output: m.cost.output,
+          cache: { read: m.cost.cache_read, write: m.cost.cache_write },
+        },
+      ],
+      limit: { context: m.limit.context, output: m.limit.output },
+      time: { released },
+      status: "active" as const,
+      enabled: true,
+      // Effort levels as variants: picking one merges `{ effort }` into the
+      // model's settings → `providerOptions.<providerID>.effort`.
+      variants: Object.keys(m.variants ?? {}).map((id) => ({
+        id: Model.VariantID.make(id),
+        settings: { effort: m.variants[id].effort },
+      })),
+    };
+  });
 }

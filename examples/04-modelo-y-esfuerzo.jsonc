@@ -1,30 +1,36 @@
 {
-  // Fijar modelo y esfuerzo de razonamiento.
+  // Fijar modelo y esfuerzo de razonamiento (OpenCode V2).
   //
   // El esfuerzo (effort) es una VARIANTE del modelo: en la TUI eliges
-  // p. ej. "acp/opus:max" o "acp/haiku:low". Aquí mostramos cómo fijarlo
-  // por agente (variant) y/o globalmente en el provider (claudeCode).
+  // p. ej. "acp/opus#max" o "acp/haiku#low" (sintaxis V2 `provider/model#variant`).
+  // Aquí mostramos cómo fijarlo por agente (config `agents`) y/o con las
+  // options ACP del agente en las options del plugin.
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["opencode-claude-code-acpbridge", {
-      "command": "claude-agent-acp",
-      "claudeCode": {
-        // Por defecto para cualquier uso del provider (si no lo fija el agente):
-        "effort": "high",
-        "thinking": { "type": "enabled", "budgetTokens": 16000 }
-      }
-    }]
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge",
+      "options": {
+        "command": "claude-agent-acp",
+        "claudeCode": {
+          // Por defecto para cualquier uso del provider (si no lo fija el agente):
+          "effort": "high",
+          "thinking": { "type": "enabled", "budgetTokens": 16000 }
+        },
+        // Options ACP por agente (mode, effort, …): el context hook las inyecta
+        // por llamada y se aplican en caliente (setSessionMode/setSessionConfigOption).
+        "agents": {
+          "claude-code-fast": {
+            "description": "Claude Code rápido (Haiku, esfuerzo bajo)",
+            "model": "haiku", "variant": "low",
+            "options": { "mode": "default" }
+          }
+        }
+      } }
   ],
-  "agent": {
-    // Máxima calidad: Opus con esfuerzo máximo.
-    "claude-code": { "model": "acp/default", "variant": "max" },
-    // Rápido/barato para tareas ligeras: Haiku con esfuerzo bajo.
-    "claude-code-fast": {
-      "description": "Claude Code rápido (Haiku, esfuerzo bajo)",
-      "model": "acp/haiku",
-      "variant": "low",
-      "mode": "primary",
-      "options": { "mode": "bypassPermissions" }
-    }
+  "agents": {
+    // Máxima calidad: Opus con esfuerzo máximo (`model#variant`).
+    "claude-code": { "model": "acp/default#max" },
+    // El agente nuevo (definido arriba en las options del plugin) aparece en el
+    // selector como primario:
+    "claude-code-fast": { "mode": "primary" }
   }
 }

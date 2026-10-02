@@ -7,13 +7,14 @@
   // sesión como app de terceros → se factura como EXTRA USAGE (de pago), no
   // contra tu suscripción. Úsalo solo si lo aceptas.
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["opencode-claude-code-acpbridge", {
-      "command": "claude-agent-acp",
-      "claudeCode": {
-        "systemPromptMode": "append"   // "append" (preset+OpenCode) o "replace" (solo OpenCode)
-      }
-    }]
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge",
+      "options": {
+        "command": "claude-agent-acp",
+        "claudeCode": {
+          "systemPromptMode": "append"   // "append" (preset+OpenCode) o "replace" (solo OpenCode)
+        }
+      } }
   ]
   // Con esto, cualquier agente de OpenCode usando un modelo acp/* respeta su
   // propio system. Para volver a la suscripción, quita systemPromptMode (default "preset").

@@ -1,12 +1,15 @@
 {
-  // Config mínima. El plugin descubre los modelos del agente y registra el
-  // provider `acp` + los agentes `claude-code` y `claude-code-plan`.
+  // Config mínima (OpenCode V2). El plugin descubre los modelos del agente y
+  // registra el provider `acp` + los agentes `claude-code` y `claude-code-plan`.
   // Consume de tu SUSCRIPCIÓN (systemPromptMode "preset" por defecto).
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["opencode-claude-code-acpbridge", { "command": "claude-agent-acp" }]
+  "plugins": [
+    { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ]
-  // Úsalo: en la TUI elige el agente "claude-code", o el modelo "acp/default".
-  // Si la autodetección del binario falla, añade dentro de las opciones:
+  // Úsalo: en la TUI elige el agente "claude-code" (o el modelo "acp/default");
+  // en CLI: `opencode run --agent claude-code -m acp/default "…"`.
+  // Si la autodetección del binario falla, añade dentro de las options:
   //   "claudeExecutable": "/ruta/a/claude"
+  // Desarrollo local: "package" puede ser la RUTA DEL DIRECTORIO del repo
+  // (compilado con `npm run build`; la raíz necesita el `index.js` puente).
 }

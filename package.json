@@ -55,17 +55,17 @@
     "@mcpc-tech/acp-ai-provider": "^0.3.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.17.9",
+    "@opencode/plugin": "^2.0.21",
     "@types/node": "^25.8.0",
     "typescript": "^5.8.0"
   },
   "peerDependencies": {
     "@ai-sdk/provider": "^3.0.0",
-    "@opencode-ai/plugin": ">=1.14",
+    "@opencode/plugin": ">=2.0.14",
     "ai": "^6.0.0"
   },
   "peerDependenciesMeta": {
-    "@opencode-ai/plugin": {
+    "@opencode/plugin": {
       "optional": true
     }
   }

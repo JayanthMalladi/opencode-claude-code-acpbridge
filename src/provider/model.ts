@@ -36,6 +36,7 @@ import {
   type ClaudeCodeControl,
 } from "../acp/claude-config.js";
 import { setLink, updateUsage } from "../plugin/sessions.js";
+import { addAlwaysRule, evaluate as evaluateBridge } from "../plugin/bridge-rules.js";
 
 const DEBUG = !!process.env.ACP_DEBUG;
 const dbg = (m: string) => { if (DEBUG) process.stderr.write(`[acp-orchestrator] ${m}\n`); };
@@ -104,10 +105,10 @@ interface TurnState {
    *  dropping them is what truncated text and hid the reasoning block. */
   pending: LanguageModelV3StreamPart[];
   pendingTools: Set<string>;
-  /** Permission bridge: claude_permission toolCallId → resolver of the deferred
-   *  ACP requestPermission. The agent waits on the Promise while OpenCode shows
-   *  its `ask` prompt; the tool-result (approved / error) resolves it. */
-  pendingPermissions: Map<string, (approved: boolean) => void>;
+  /** Permission bridge: question toolCallId → resolver of the deferred ACP
+   *  requestPermission. The agent waits on the Promise while the user answers
+   *  the `question` dialog; the tool-result (allow/deny) resolves it. */
+  pendingPermissions: Map<string, (verdict: PermissionVerdict) => void>;
   textId: string | null;
   reasoningId: string | null;
   cancelWatchdog: ReturnType<typeof setTimeout> | null;
@@ -122,6 +123,18 @@ interface Continuation {
   t: TurnState;
   results: Array<{ toolCallId: string; result: unknown; output: any }>;
 }
+
+/** What the user answered in the bridged permission dialog. `always` persists an
+ *  allow-rule (see bridge-rules.ts); anything ambiguous resolves as a denial. */
+interface PermissionVerdict {
+  approved: boolean;
+  always: boolean;
+}
+
+/** Dialog labels — also the strings the verdict parser looks for (see `questionVerdict`). */
+const ALLOW_ONCE = "Allow once";
+const ALWAYS_ALLOW = "Always allow";
+const DENY = "Deny";
 
 function emptyUsage(): LanguageModelV3Usage {
   return {
@@ -246,10 +259,10 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         for (const { toolCallId, result, output } of continuation.results) {
           const permResolve = t.pendingPermissions.get(toolCallId);
           if (permResolve) {
-            // Permission bridge: OpenCode's `ask` verdict came back as the
-            // claude_permission tool-result → resolve the deferred requestPermission.
+            // Permission bridge: the user's `question` answer came back as the
+            // tool-result → resolve the deferred requestPermission.
             t.pendingPermissions.delete(toolCallId);
-            permResolve(this.isApprovedOutput(output));
+            permResolve(this.questionVerdict(output));
           } else {
             t.pendingTools.delete(toolCallId);
             t.host.resolveToolCall(toolCallId, result);
@@ -261,7 +274,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       await this.ensureConnected();
       const tools = this.convertTools(options.tools);
       const ctrl = this.effectiveCtrl(options);
-      const po = (options.providerOptions as any)?.[this.provider] ?? {};
+      const po = this.providerOptions(options);
       const ocSession: string | undefined = po.ocSession;
       const convKey = hashText(this.firstUserText(options.prompt));
       const toolsKey = tools.map((x) => x.name).sort().join(",");
@@ -570,25 +583,64 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       .join("\n");
   }
 
-  /** ACP requestPermission → OpenCode `ask`, via the claude_permission meta-tool.
-   *  Deferred: returns a Promise the agent awaits until OpenCode's verdict comes
-   *  back as the meta-tool's result (resolved in onStart's continuation branch). */
+  /** ACP requestPermission → the agent's own rules first, then the `question` dialog.
+   *  Deferred: returns a Promise the agent awaits until the verdict comes back as
+   *  the `question` tool-result (resolved in onStart's continuation branch). */
   private onRequestPermission(params: any): Promise<{ outcome: any }> {
     const t = this.byAcpSession.get(String(params?.sessionId ?? ""));
     // No live turn/controller → approve so the agent never hangs.
     if (!t || !t.controller) return Promise.resolve(this.permOutcome(params, true));
+    const toolCall = params?.toolCall;
+    const native = this.permToolName(toolCall);
+    const target = this.bridgeTarget(toolCall);
+    const agent = t.ocAgent ?? "default";
+    // (1) allow/deny rules answer outright — no dialog, same as a native tool
+    // OpenCode would resolve itself.
+    const rules = evaluateBridge(agent, native, target.pattern);
+    dbg(`requestPermission(${native} → ${target.pattern}) agent=${agent} rules=${rules}`);
+    if (rules === "allow") return Promise.resolve(this.permOutcome(params, true));
+    if (rules === "deny") return Promise.resolve(this.permOutcome(params, false));
+    // (2) "ask": raise a `question` dialog and wait for its tool-result.
     const callId = `perm_${++this.idSeq}`;
-    dbg(`requestPermission(${this.permToolName(params?.toolCall)}) → bridge as claude_permission (${callId})`);
+    dbg(`requestPermission(${native}) → bridge as question (${callId})`);
     return new Promise<{ outcome: any }>((resolve) => {
-      t.pendingPermissions.set(callId, (approved: boolean) => resolve(this.permOutcome(params, approved)));
-      this.emitPermissionCall(t, callId, params?.toolCall);
+      t.pendingPermissions.set(callId, (verdict: PermissionVerdict) => {
+        if (verdict.approved && verdict.always && target.always) addAlwaysRule(agent, native, target.always);
+        resolve(this.permOutcome(params, verdict.approved));
+      });
+      this.emitPermissionCall(t, callId, toolCall, native, target);
     });
   }
 
-  /** Emit a claude_permission tool-call to OpenCode (same deferred pattern as a
-   *  real tool-call): OpenCode applies its `ask` permission and returns the
-   *  verdict as the tool-result on the next doStream. */
-  private emitPermissionCall(t: TurnState, callId: string, toolCall: any) {
+  /** Action target of a native request (command / skill / path), plus the glob an
+   *  "Always allow" would persist. Shell commands collapse to their first token
+   *  (`git status` → `git *`); a request with no real target persists nothing, so
+   *  the dialog never offers a broad rule that would auto-approve everything. */
+  private bridgeTarget(toolCall: any): { pattern: string; always?: string } {
+    const raw: any = toolCall?.rawInput;
+    const inp = raw && typeof raw === "object" ? raw : {};
+    const text = String(
+      (inp.command ?? inp.skill ?? inp.name ?? inp.notebook_path ?? inp.file_path ?? inp.path) ||
+      (typeof raw === "string" ? raw : "") ||
+      toolCall?.title ||
+      "",
+    ).trim();
+    const always =
+      toolCall?.kind === "execute" && text.includes(" ") ? `${text.split(/\s+/)[0]} *` : text || undefined;
+    return { pattern: text || "*", always };
+  }
+
+  /** Emit a `question` tool-call to OpenCode (same deferred pattern as a real
+   *  tool-call): the native tool's request becomes a dialog — Allow once /
+   *  Always allow / Deny — and the answer arrives as the tool-result on the next
+   *  doStream. The agent itself only ever sees the ACP permission outcome. */
+  private emitPermissionCall(
+    t: TurnState,
+    callId: string,
+    toolCall: any,
+    native: string,
+    target: { pattern: string; always?: string },
+  ) {
     if (!t.controller) return;
     this.closeBlocks(t);
     // ExitPlanMode (switch_mode): render the PLAN as visible assistant text before the
@@ -604,15 +656,24 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       }
     }
     const input = JSON.stringify({
-      tool: this.permToolName(toolCall),
-      kind: toolCall?.kind,
-      title: toolCall?.title,
-      input: toolCall?.rawInput,
+      questions: [
+        {
+          question: `${native}: ${toolCall?.title ?? target.pattern}`,
+          header: "Permission",
+          options: [
+            { label: ALLOW_ONCE, description: "Approve this action for this call only" },
+            ...(target.always
+              ? [{ label: ALWAYS_ALLOW, description: `Approve and stop asking for ${target.always}` }]
+              : []),
+            { label: DENY, description: "Block this action" },
+          ],
+        },
+      ],
     });
-    this.emit(t, { type: "tool-input-start", id: callId, toolName: "claude_permission" });
+    this.emit(t, { type: "tool-input-start", id: callId, toolName: "question" });
     this.emit(t, { type: "tool-input-delta", id: callId, delta: input });
     this.emit(t, { type: "tool-input-end", id: callId });
-    this.emit(t, { type: "tool-call", toolCallId: callId, toolName: "claude_permission", input });
+    this.emit(t, { type: "tool-call", toolCallId: callId, toolName: "question", input });
     this.emit(t, { type: "finish", usage: emptyUsage(), finishReason: { unified: "tool-calls", raw: "tool_use" } });
     try { t.controller?.close(); } catch { /* ignore */ }
     t.controller = null;
@@ -693,14 +754,28 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
   /** Resolve every outstanding bridged permission as denied so the agent unblocks. */
   private drainPermissions(t: TurnState) {
     if (t.pendingPermissions.size === 0) return;
-    for (const resolve of [...t.pendingPermissions.values()]) { try { resolve(false); } catch { /* ignore */ } }
+    const denied: PermissionVerdict = { approved: false, always: false };
+    for (const resolve of [...t.pendingPermissions.values()]) { try { resolve(denied); } catch { /* ignore */ } }
     t.pendingPermissions.clear();
+  }
+
+  /** Per-call provider options: V2 nests them under `providerOptionKey(package,
+   *  providerID)` = the providerID, but a canonical/custom id would key them
+   *  differently → fall back to the first object entry so any registration works. */
+  private providerOptions(options: LanguageModelV3CallOptions): Record<string, any> {
+    const all = (options.providerOptions ?? {}) as Record<string, unknown>;
+    const own = all[this.provider];
+    if (own && typeof own === "object") return own as Record<string, any>;
+    for (const value of Object.values(all)) {
+      if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>;
+    }
+    return {};
   }
 
   /** Provider config overlaid with per-call `providerOptions.acp` (per-agent mode/effort/…). */
   private effectiveCtrl(options: LanguageModelV3CallOptions): ClaudeCodeControl {
     const ctrl: ClaudeCodeControl = { ...(this.config.claudeCode ?? {}) };
-    const po = (options.providerOptions as any)?.[this.provider];
+    const po = this.providerOptions(options);
     if (po && typeof po === "object") {
       // Per-agent overrides from `agent.<name>.options` (→ providerOptions.acp):
       // mode/effort/reasoning plus the native-feature toggles.
@@ -866,10 +941,6 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     if (!tools) return [];
     const out: McpToolDef[] = [];
     for (const t of tools) {
-      // Skip the permission-bridge meta-tool: the provider emits `claude_permission`
-      // itself and OpenCode runs it via the plugin, so the AGENT must NOT see it
-      // (otherwise it surfaces as mcp__opencode__claude_permission and confuses it).
-      if ((t as any).name === "claude_permission") continue;
       if ((t as any).type === "function") {
         out.push({
           name: (t as any).name,
@@ -1100,12 +1171,27 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     return ty === "error-text" || ty === "error-json" || ty === "error";
   }
 
-  /** Approve a bridged permission ONLY on an explicit positive verdict (the
-   *  claude_permission meta-tool returns "approved: …"). Errors, denials, and any
-   *  ambiguous output fail CLOSED so an unclear verdict never runs the native tool. */
-  private isApprovedOutput(output: any): boolean {
-    if (this.isErrorOutput(output)) return false;
-    return this.outputToText(output).toLowerCase().includes("approved");
+  /** Approve a bridged permission ONLY on an explicit positive answer to the
+   *  `question` dialog. Errors, dismissals, and any ambiguous output (including
+   *  a typed-in answer) fail CLOSED so an unclear verdict never runs the tool. */
+  private questionVerdict(output: any): PermissionVerdict {
+    if (this.isErrorOutput(output)) return { approved: false, always: false };
+    const answer = this.answerLabel(output).toLowerCase();
+    if (answer.includes("always allow")) return { approved: true, always: true };
+    if (answer.includes("allow once")) return { approved: true, always: false };
+    return { approved: false, always: false };
+  }
+
+  /** The chosen label: typed output (`{ answers: [["Always allow"]] }`) first,
+   *  then the rendered text fallback (`"question"="Always allow"`). */
+  private answerLabel(output: any): string {
+    const answers = output?.value?.answers;
+    if (Array.isArray(answers)) {
+      const first = answers[0];
+      if (Array.isArray(first)) return String(first[0] ?? "");
+      if (typeof first === "string") return first;
+    }
+    return this.outputToText(output);
   }
 
   private outputToText(output: any): string {
