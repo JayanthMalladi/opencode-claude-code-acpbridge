@@ -3,6 +3,22 @@
 Paquete: `opencode-claude-code-acpbridge` v0.8.0 (V1) → V2 (`@opencode/plugin`, OpenCode 2.0.14).
 Fuentes de verdad: `opencode-v2/` (checkout local), docs `https://opencode.ai/v2/docs/…`.
 
+## Estado / Breaking changes (0.9.0)
+
+**Port completado y verificado.** Publicado como **0.9.0** (smoke test OK): auto-registro
+del provider (`provider.transform` → `aisdk:<spec>`), agentes inyectados con ruleset
+`permissions`, y reuse/resume de sesión **sin reenvío de historial** (incluido el catch-up
+tras cambiar de agente).
+
+> ⚠️ **0.9.0+ solo funciona con OpenCode V2; para OpenCode V1 conserva 0.8.x.**
+
+El detalle completo de los breaking changes (runtime de plugins, config `plugins[]`,
+`agents.permissions`, variantes `#variant`, puente de permisos `question`, destino de
+desarrollo por directorio, CLI `-m`, requisitos) está en
+**[CHANGELOG 0.9.0](CHANGELOG.md#090--opencode-v2-2026-10-01)**; la guía práctica en
+[README § De 0.8.x (V1) a 0.9.x (V2)](README.md#de-08x-v1-a-09x-v2).
+Este documento queda como **plan/diseño del port** (decisiones y mapeos).
+
 ## 1. Resumen
 
 | Bloque | Estado |

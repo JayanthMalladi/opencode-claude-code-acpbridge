@@ -34,7 +34,7 @@ Puntos clave:
 
 | Requisito | Notas |
 |---|---|
-| **OpenCode** | V2 (`>= 2.0.14`). Este paquete (0.8.x → V2) solo funciona en OpenCode V2: API de plugins `Plugin.define`, `plugins[]` en config, hooks `provider.transform`/`agent.transform`/`session.hook("context")`. |
+| **OpenCode** | V2 (`>= 2.0.14`). **0.9.x solo para OpenCode V2 — en V1 usa 0.8.x.** API de plugins `Plugin.define`, `plugins[]` en config, hooks `provider.transform`/`agent.transform`/`session.hook("context")`. |
 | **El agente ACP** | `@agentclientprotocol/claude-agent-acp` (binario `claude-agent-acp`) en el `PATH`. También sirve `claude-code-acp` / `@zed-industries/claude-agent-acp`. |
 | **Claude Code CLI** | El binario `claude` instalado y **autenticado** (`claude` lee `~/.claude/.credentials.json`). El provider lo detecta con `command -v claude`. |
 | **Node** | El runtime del MCP server interno se ejecuta con `node` (debe estar en el `PATH`). |
@@ -119,6 +119,19 @@ Por defecto el provider se registra como **`acp`**. Si necesitas otro ID —típ
 Así el **auto-registro, el resume, el puente de permisos y los agentes** (`claude-code` → `anthropic/default`) usan ese ID de forma **coherente y con un solo backend**.
 
 > ⚠️ Usar `"anthropic"` **sobrescribe el provider oficial de Anthropic** de OpenCode. Es seguro **si no usas la API directa de Anthropic** (consumes de la suscripción vía ACP). A vigilar: OpenCode puede listar modelos "fantasma" de models.dev en el selector (usa solo `anthropic/default` y `anthropic/sonnet`); si algún día quieres la API directa, quita el `providerId`.
+
+### De 0.8.x (V1) a 0.9.x (V2)
+
+1. **Config del plugin**: `"plugin": [[pkg, {opts}]]` → `"plugins": [{ "package": pkg, "options": {…} }]`. Si declarabas `provider.acp` a mano, quítalo: el plugin lo auto-registra en runtime.
+2. **Agentes**: la sección `agent:` pasa a `agents:`; `permission` (mapa) → `permissions` (ruleset: `[{ "action": "Bash", "resource": "git *", "effect": "allow" }]`); `disable` → `disabled`.
+3. **Variantes**: `acp/opus:low` → `acp/opus#low` (sintaxis V2 `provider/model#variant`).
+4. **Options por agente** (mode/effort/native*): de `agent.<n>.options` → `plugins[0].options.agents.<n>.options`.
+5. **Quita `claude_permission`**: esa meta-tool ya no existe; el puente de permisos emite tool-calls de la tool `question` de OpenCode. Si tenías reglas `permission` para el puente, trasládalas a `agents.<n>.permissions` (el puente las evalúa fail-closed).
+6. **`package` = directorio con build** en desarrollo: apunta a la ruta del repo (con `index.js` raíz que re-exporta `dist/`), no a un fichero — V2 rechaza ficheros. Compila con `npm run build`.
+7. **CLI**: `opencode run` sin `-m` ignora `agent.model`; usa `opencode run -m acp/…`.
+8. **Requisitos**: OpenCode `>= 2.0.14` y agente `@agentclientprotocol/claude-agent-acp`.
+
+Detalle completo en [CHANGELOG 0.9.0](CHANGELOG.md#090--opencode-v2-2026-10-01) y plan del port en [MIGRATION_V2.md](MIGRATION_V2.md).
 
 ---
 

@@ -5,23 +5,33 @@ Todas las versiones notables de `opencode-claude-code-acpbridge`. Formato basado
 
 ## 0.9.0 — OpenCode V2 (2026-10-01)
 
+> ⚠️ **0.9.0+ solo funciona con OpenCode V2; para OpenCode V1 conserva 0.8.x.**
+>
+> El port es un **breaking change total de runtime**: el plugin V1
+> (`export default { id, server }`, hooks `config`/`chat.params`) no se carga en
+> OpenCode V2, y el plugin V2 (`Plugin.define`) no se carga en OpenCode V1.
+
 Port del plugin y del provider al runtime de plugins **V2** de OpenCode.
 
-### ⚠️ Breaking
+### Breaking changes
 
-- **Runtime de plugins V2**: `Plugin.define({id, setup})` (API con promesas), config
-  `plugins: [{ "package", "options" }]` en lugar de `plugin: [["pkg", {opts}]]`,
-  transforms `provider.transform`/`agent.transform` y `session.hook("context")` en
-  lugar de los hooks V1 `config`/`chat.params`.
-- **Sintaxis de variantes V2** `provider/model#variant` (antes `provider/model:variant`);
-  los agentes pasan a la sección `agents` de la config con el ruleset `permissions`
-  (antes mapa `permission`).
-- **Puente de permisos reescrito**: la meta-tool `claude_permission` desaparece; el
-  provider emite un tool-call de la tool nativa `question` de OpenCode (diálogo
-  `Allow once` / `Always allow` / `Deny`). Las reglas salen de `agents.<n>.permissions`
-  vía `bridge-rules.ts` (fail-closed; `action:"*"` se ignora a propósito). `Always allow`
-  persiste la regla en `~/.acp-model-provider/always.json`.
-- **CLI V2**: `opencode run` sin `-m` ignora `agent.model` (usa el model global de config).
+| Área | V1 (0.8.x) | V2 (0.9.0) |
+| :--- | :--- | :--- |
+| **Runtime de plugins** | `export default { id, server }`, hooks `config`/`chat.params` | `Plugin.define({ id, setup })` con API de promesas (`setup` retorna cleanup) |
+| **Config del plugin** | `"plugin": [[pkg, {opts}]]` | `"plugins": [{ "package", "options" }]` |
+| **Auto-registro del provider** | el hook `config` mutaba `cfg.provider.acp` | `provider.transform` lo registra como `aisdk:<spec>` (con `options.command`); si declaras `provider.<id>` a mano, no lo sobreescribe |
+| **Inyección por llamada** | hook `chat.params` → `providerOptions.acp.{ocSession, resumeId, resumeLen}` | `session.hook("context")` → `ocSession`, `ocAgent`, `resumeId`, `resumeLen`, `resumeLastUsage`, `resumeConvKey` + options del agente por llamada |
+| **Agentes (config)** | sección `agent:` con `permission` (mapa `{tool: "allow"\|"deny"\|"ask"\|glob}`) y `disable` | sección `agents:` con `permissions` (ruleset array `[{action, resource, effect}]`), `disabled` y `mode: "subagent"\|"primary"\|"all"` |
+| **Options por agente** | `agent.<n>.options` (mode/effort/native*) | `plugins[0].options.agents.<n>.options` (misma options, otra ruta) |
+| **Puente de permisos** | meta-tool `claude_permission` (prompt `ask` con `ctx.ask`) | emite un **tool-call de la tool nativa `question`** de OpenCode (diálogo `Allow once` / `Always allow` / `Deny`); reglas desde `agents.<n>.permissions` evaluadas en `src/plugin/bridge-rules.ts`, **fail-closed** (ignora `action:"*"` a propósito); `Always allow` persiste en `~/.acp-model-provider/always.json` |
+| **Variantes de esfuerzo** | `acp/opus:low` | `acp/opus#low` (`provider/model#variant`) |
+| **Revert / compactación** | fingerprint por `chat.params` | eventos `session.revert.committed\|cleared` → `clearLink` |
+| **Desarrollo local** | destino = fichero (`…/dist/index.js`) | destino = **ruta de directorio** con `index.js` raíz (V2 `Host.resolve` busca `<dir>/index.*`); los ficheros se rechazan |
+| **CLI** | `opencode run` aplicaba `agent.model` | `opencode run` **sin `-m` ignora `agent.model`** (usa el model global); usa `-m acp/…` |
+| **Requisitos** | OpenCode V1 | OpenCode **V2 (`>= 2.0.14`)** y agente `@agentclientprotocol/claude-agent-acp` (antes `@zed-industries/claude-agent-acp`) |
+
+Guía práctica de migración: ver [README § De 0.8.x (V1) a 0.9.x (V2)](README.md#de-08x-v1-a-09x-v2)
+y [MIGRATION_V2.md](MIGRATION_V2.md).
 
 ### Added
 
