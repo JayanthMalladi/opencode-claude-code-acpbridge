@@ -26,7 +26,7 @@ for (const [name, feat] of Object.entries(FEATURES)) {
     command: "claude-agent-acp",
     claudeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
     claudeCode: { systemPromptMode: "preset", mode: "bypassPermissions", ...feat },
-  }).languageModel("sonnet");
+  }).languageModel(process.env.VERIFY_MODEL || "sonnet");
   try {
     let out = "", err = null;
     const messages = [

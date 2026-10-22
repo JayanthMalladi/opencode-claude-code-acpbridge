@@ -6,27 +6,32 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { logger } from "../log.js";
 
 export interface McpToolDef {
   name: string;
   description?: string;
   inputSchema: object;
+  /** MCP tool annotations; `readOnlyHint` lets Claude Code run the tool in parallel. */
+  annotations?: { readOnlyHint?: boolean };
 }
 
 export interface DeferredToolCall {
   toolCallId: string;
   name: string;
   args: Record<string, unknown>;
+  /** Claude Code's tool_use id for this call, when the agent sends it. */
+  toolUseId?: string;
 }
 
 type ToolCallHandler = (call: DeferredToolCall) => void;
+type CancelHandler = (toolCallId: string) => void;
 
 const RUNTIME_PATH = join(dirname(fileURLToPath(import.meta.url)), "mcp-runtime.js");
 // Use a real JS interpreter. process.execPath can be the host app binary (e.g.
 // the compiled `opencode`/bun executable) which won't run an arbitrary script.
 const NODE_BIN = process.env.ACP_RUNTIME_NODE || "node";
-const HOST_DEBUG = !!process.env.ACP_DEBUG;
-const hdbg = (m: string) => { if (HOST_DEBUG) process.stderr.write(`[acp-mcp-host] ${m}\n`); };
+const hdbg = logger("acp-mcp-host").dbg;
 
 export class McpHost {
   private server: Server | null = null;
@@ -35,6 +40,7 @@ export class McpHost {
   private readonly sockets = new Set<Socket>();
   private readonly pending = new Map<string, { socket: Socket; runtimeId: unknown }>();
   private handler: ToolCallHandler | null = null;
+  private cancelHandler: CancelHandler | null = null;
   private counter = 0;
 
   /** `idPrefix` scopes minted toolCallIds to THIS host instance. It MUST be unique per
@@ -59,6 +65,11 @@ export class McpHost {
 
   onToolCall(handler: ToolCallHandler) {
     this.handler = handler;
+  }
+
+  /** The agent cancelled a call it had issued (interrupt). */
+  onToolCancelled(handler: CancelHandler) {
+    this.cancelHandler = handler;
   }
 
   async start(): Promise<void> {
@@ -133,7 +144,7 @@ export class McpHost {
 
   private handleLine(socket: Socket, line: string) {
     if (!line.trim()) return;
-    let msg: { id?: unknown; method?: string; params?: { name?: string; args?: Record<string, unknown> } };
+    let msg: { id?: unknown; method?: string; params?: { id?: unknown; name?: string; args?: Record<string, unknown>; toolUseId?: string } };
     try {
       msg = JSON.parse(line);
     } catch {
@@ -145,7 +156,14 @@ export class McpHost {
     } else if (msg.method === "callTool") {
       const toolCallId = `${this.idPrefix}${++this.counter}`;
       this.pending.set(toolCallId, { socket, runtimeId: msg.id });
-      this.handler?.({ toolCallId, name: msg.params?.name ?? "", args: msg.params?.args ?? {} });
+      const toolUseId = typeof msg.params?.toolUseId === "string" ? msg.params.toolUseId : undefined;
+      this.handler?.({ toolCallId, name: msg.params?.name ?? "", args: msg.params?.args ?? {}, toolUseId });
+    } else if (msg.method === "cancelCall") {
+      for (const [toolCallId, p] of this.pending) {
+        if (p.socket !== socket || p.runtimeId !== msg.params?.id) continue;
+        this.pending.delete(toolCallId);
+        this.cancelHandler?.(toolCallId);
+      }
     }
   }
 

@@ -13,7 +13,7 @@ import {
   parseEnv,
   type ACPEnvConfig,
 } from "./env.js";
-import { ACPOrchestratorModel, type ACPModelConfig } from "./model.js";
+import { ACPModelView, ACPOrchestratorModel, type ACPModelConfig } from "./model.js";
 import type { ClaudeCodeControl } from "../acp/claude-config.js";
 
 // ---------------------------------------------------------------------------
@@ -165,14 +165,16 @@ export function createACPModelProvider(
 ): ACPModelProvider {
   const base = resolveOrchestratorConfig(options);
   const providerName = options.name ?? "acp-model";
-  // One orchestrator instance per modelId (keeps the ACP connection/session alive).
-  const models = new Map<string, ACPOrchestratorModel>();
+  // ONE orchestrator — one agent process, one session map — for every model of the
+  // provider; each model is a view that applies its model per session (set_model).
+  const core = new ACPOrchestratorModel({ ...base, modelId: "claude-code" });
+  const models = new Map<string, LanguageModelV3>();
 
-  const get = (modelId?: string): ACPOrchestratorModel => {
+  const get = (modelId?: string): LanguageModelV3 => {
     const id = modelId ?? "claude-code";
     let m = models.get(id);
     if (!m) {
-      m = new ACPOrchestratorModel({ ...base, modelId: id });
+      m = id === "claude-code" ? core : new ACPModelView(core, id);
       models.set(id, m);
     }
     return m;

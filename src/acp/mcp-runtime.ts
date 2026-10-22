@@ -56,7 +56,10 @@ function failPending(reason: string) {
   hostPending.clear();
 }
 
-function hostRequest(method: string, params?: Json): Promise<any> {
+/** MCP request id (agent side) → host request id, for `notifications/cancelled`. */
+const callIds = new Map<unknown, number>();
+
+function hostRequest(method: string, params?: Json, mcpId?: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
     // Durante la reconexión no se encola: se rechaza con error claro y el
     // agente reintenta (tools/list y tools/call ya traducen el error a MCP).
@@ -65,6 +68,7 @@ function hostRequest(method: string, params?: Json): Promise<any> {
     }
     const id = nextHostId++;
     hostPending.set(id, { resolve, reject });
+    if (mcpId !== undefined) callIds.set(mcpId, id);
     host.write(JSON.stringify({ id, method, params: params ?? {} }) + "\n");
     // No client-side timeout: the host defers until OpenCode resolves the tool.
     // The agent's own MCP timeout (CLAUDE_CODE_STREAM_CLOSE_TIMEOUT) is the bound.
@@ -163,6 +167,15 @@ async function handle(msg: any) {
       return;
     case "notifications/initialized":
       return; // notification, no reply
+    case "notifications/cancelled": {
+      // The agent gave up on a call (interrupt): tell the host so a call still queued
+      // for OpenCode is dropped instead of being run for nobody.
+      const hostId = callIds.get(msg.params?.requestId);
+      if (hostId !== undefined && host && !host.destroyed) {
+        host.write(JSON.stringify({ method: "cancelCall", params: { id: hostId } }) + "\n");
+      }
+      return;
+    }
     case "ping":
       reply(id, {});
       return;
@@ -180,7 +193,9 @@ async function handle(msg: any) {
         const result = await hostRequest("callTool", {
           name: msg.params?.name,
           args: msg.params?.arguments ?? {},
-        });
+          // Claude Code's tool_use id: the same id its ACP tool_call notifications carry.
+          toolUseId: msg.params?._meta?.["claudecode/toolUseId"],
+        }, id).finally(() => callIds.delete(id));
         // Host returns an MCP CallToolResult (or a plain value to wrap).
         if (result && typeof result === "object" && Array.isArray((result as any).content)) {
           reply(id, result);
@@ -200,8 +215,10 @@ async function handle(msg: any) {
 async function main() {
   // Apagado propio (el agente cierra stdin o llegan SIGTERM/SIGINT): marca el
   // flag para que onHostClose no intente reconectar ni fuerce exit(1).
-  process.on("SIGTERM", () => { shuttingDown = true; });
-  process.on("SIGINT", () => { shuttingDown = true; });
+  // Registering a handler disables Node's default exit-on-signal, so exit explicitly:
+  // a runtime that ignores SIGTERM lingers until its stdin happens to close.
+  process.on("SIGTERM", () => { shuttingDown = true; process.exit(0); });
+  process.on("SIGINT", () => { shuttingDown = true; process.exit(0); });
   await connectHost();
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (line) => {

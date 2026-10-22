@@ -15,7 +15,7 @@ const model = createACPModelProvider({
   command: process.env.ACP_COMMAND || "claude-agent-acp",
   claudeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
   claudeCode: { systemPromptMode: "preset", mode: "bypassPermissions", effort: "max" },
-}).languageModel("sonnet");
+}).languageModel(process.env.VERIFY_MODEL || "sonnet");
 
 // Dos "ficheros" sintéticos: obligan a dos tool-calls con texto entre medias.
 const FILES = {

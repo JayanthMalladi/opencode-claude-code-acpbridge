@@ -125,6 +125,58 @@ export interface ClaudeCodeControl {
    * session on the subscription. Sent in full once per session, then as deltas.
    */
   forwardEnvContext?: boolean;
+  /**
+   * Characters kept of each tool result produced by ANOTHER model when its turns are
+   * caught up into this session (default 8000). Larger = the agent knows more of what
+   * the other model saw after a model switch; smaller = cheaper catch-up.
+   */
+  catchupResultChars?: number;
+  /**
+   * How the provider recognises what the agent already knows of the history.
+   *  - `"shadow"` (default): legacy per-message keys decide; the anchor fingerprint
+   *    (user messages + tool-call ids) runs alongside and every disagreement is logged
+   *    to ~/.acp-model-provider/logs — evidence before switching.
+   *  - `"v2"`: anchors decide (immune to OpenCode re-rendering old assistant messages
+   *    and to plugins tagging message text).
+   *  - `"legacy"`: legacy only. Env override: `ACP_HISTORY_MODE`.
+   */
+  historyMode?: "legacy" | "shadow" | "v2";
+  /**
+   * OpenCode tools announced to the agent as read-only (MCP `readOnlyHint`), so Claude
+   * Code issues several at once and they reach OpenCode in a single step, run in
+   * parallel. Default: read, glob, grep, webfetch, websearch, skill, subagent.
+   */
+  parallelTools?: string[];
+  /** How long (ms) a read-only call waits for parallel siblings. Default 40. */
+  toolBatchMs?: number;
+  /**
+   * Context percentage at which Claude Code compacts its own session
+   * (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). Default 75: below OpenCode's threshold, so the
+   * agent manages its context natively and OpenCode's compaction rarely runs. `0`
+   * leaves Claude Code's default.
+   */
+  autoCompactPct?: number;
+  /**
+   * Native tool activity (Task/Agent, WebSearch, Skill, NotebookEdit…) written into the
+   * answer as short text blocks, so it stays in OpenCode's history for any model that
+   * continues the session. `"off"` hides it. Default `"text"`.
+   */
+  nativeActivity?: "text" | "off";
+  /** Characters kept of a native Task/WebSearch/Skill result in that block. Default 2000. */
+  nativeActivityChars?: number;
+  /**
+   * On a revert, fork the Claude Code session back to the point before the reverted
+   * message (`resumeSessionAt`, located in the session transcript) instead of starting
+   * a new session with a replay. Falls back to the replay when no checkpoint/fork is
+   * possible. Default true; `false` disables it.
+   */
+  smartRevert?: boolean;
+  /** Live conversations kept open (each is a Claude Code process). Default 6. */
+  maxLiveSessions?: number;
+  /** Idle ms before a resumable session is closed (resumed on the next message). Default 15 min. */
+  idleSessionTtlMs?: number;
+  /** Same for OpenCode subagent sessions. Default 2 min. */
+  childSessionTtlMs?: number;
 
   // ---- ecosystem ----
   /** Advanced override passed straight to `_meta.claudeCode.options.systemPrompt`. */
@@ -183,7 +235,9 @@ export function resolveConfigDir(ctrl: ClaudeCodeControl): string | undefined {
  *  (OpenCode's, inherited from the parent) — keeps subagent work orchestrated and
  *  permission-bridged instead of assuming native shell/file access. */
 const DEFAULT_SUBAGENT = {
-  description: "General subagent that completes a delegated task using the available tools",
+  description:
+    "General subagent for quick, self-contained tasks using the available tools. For substantial work prefer " +
+    "OpenCode's `subagent` tool, whose result stays in the conversation shared with other models.",
   prompt:
     "You are a focused subagent. Use the tools available to you to complete the delegated task. " +
     "Tool execution is orchestrated by OpenCode and may prompt the user for permission — do not assume " +
@@ -229,7 +283,10 @@ export function buildClaudeCodeOptions(ctrl: ClaudeCodeControl): Record<string, 
     strictMcpConfig: ctrl.strictMcpConfig ?? true,
   };
   const set = (k: string, v: unknown) => { if (v !== undefined) o[k] = v; };
-  set("allowedTools", ctrl.allowedTools);
+  // OpenCode runs (and permission-checks) its own tools: auto-allow them on the agent
+  // side for EVERY agent, not just ours — a subagent inheriting this model used to
+  // double-prompt, or have every tool denied when it lacks `question`.
+  set("allowedTools", ctrl.allowedTools ?? ["mcp__opencode"]);
   set("disallowedTools", ctrl.disallowedTools);
   set("model", ctrl.model);
   set("fallbackModel", ctrl.fallbackModel);

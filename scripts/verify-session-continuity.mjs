@@ -13,7 +13,7 @@ const provider = createACPModelProvider({
   claudeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
   claudeCode: { systemPromptMode: "preset", mode: "bypassPermissions" },
 });
-const model = provider.languageModel("sonnet");
+const model = provider.languageModel(process.env.VERIFY_MODEL || "sonnet");
 const OC = "verify-continuity-" + Date.now();
 
 const CWD = process.cwd();

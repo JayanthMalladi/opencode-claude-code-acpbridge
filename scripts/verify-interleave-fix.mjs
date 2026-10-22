@@ -9,7 +9,7 @@ const model = createACPModelProvider({
   command: "claude-agent-acp",
   claudeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
   claudeCode: { systemPromptMode: "preset", mode: "bypassPermissions" },
-}).languageModel("claude-code");
+}).languageModel(process.env.VERIFY_MODEL || "claude-code");
 
 const OC_SESSION = "verify-interleave-" + Date.now();
 const acp = { acp: { ocSession: OC_SESSION } };
