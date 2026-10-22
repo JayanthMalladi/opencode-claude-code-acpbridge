@@ -3,7 +3,7 @@
 Todas las versiones notables de `opencode-claude-code-acpbridge`. Formato basado en
 [Keep a Changelog](https://keepachangelog.com/); versionado [SemVer](https://semver.org/).
 
-## [Sin publicar] — sincronía de historial, concurrencia y continuidad entre modelos
+## [0.10.0] — 2026-10-22 — sincronía de historial, concurrencia y continuidad entre modelos
 
 Revisión completa del puente contra el código de OpenCode V2, `claude-agent-acp` 0.31 y
 sesiones **reales** grabadas. Objetivo: alternar entre `acp` y otros modelos en la misma
