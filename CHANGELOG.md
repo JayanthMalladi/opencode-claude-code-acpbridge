@@ -3,6 +3,89 @@
 Todas las versiones notables de `opencode-claude-code-acpbridge`. Formato basado en
 [Keep a Changelog](https://keepachangelog.com/); versionado [SemVer](https://semver.org/).
 
+## [Sin publicar] — sincronía de historial, concurrencia y continuidad entre modelos
+
+Revisión completa del puente contra el código de OpenCode V2, `claude-agent-acp` 0.31 y
+sesiones **reales** grabadas. Objetivo: alternar entre `acp` y otros modelos en la misma
+sesión sin perder nada, y que la sesión de Claude Code se reutilice siempre que se pueda.
+Todo lo de abajo está cubierto por `npm test` (agente ACP falso + prompts reales de V2) y por
+los scripts contra el agente real.
+
+### Fixed
+
+- **La respuesta propia se reenviaba cada turno** como `"Assistant: …"` dentro del mensaje
+  del usuario (visto en transcripciones: el modelo llegó a llamarlo "mensaje falso"). El
+  provider reconoce ahora su propia salida (textos emitidos, ids con su prefijo) y no la
+  devuelve.
+- **Mensajes perdidos**: lo que escribías mientras el agente trabajaba (*steer*) y el mensaje
+  tras **interrumpir** una tool se trataban como continuación del turno y nunca llegaban.
+  Ahora el steer entra en el turno en curso (cola nativa de Claude Code) y la interrupción
+  cancela el turno antes de enviar el mensaje nuevo.
+- **Turnos de otro modelo atribuidos a Claude**: llegaban como `Assistant: [Called tool …]` y
+  Claude creía haberlos hecho él. Ahora van en `<other_model_turn>`.
+- **Tool-calls concurrentes descartadas** (subagentes nativos en paralelo): la segunda se
+  perdía y el turno colgaba. Ahora se encolan; las de solo lectura (`readOnlyHint`) se
+  agrupan en un paso que OpenCode ejecuta en paralelo.
+- **Seguridad**: los ids `perm_N` del puente se repetían entre procesos y una respuesta
+  vieja ("Always allow") podía aprobar un permiso nuevo. Ids con prefijo propio y última
+  coincidencia.
+- La finalización de un prompt viejo (cancelado o fusionado) cerraba el stream del turno
+  siguiente; texto de un turno abortado aparecía al principio del siguiente.
+- Dos llamadas simultáneas a la misma conversación creaban dos sesiones (una huérfana).
+- **Usage**: `PromptResponse.usage` es la suma de todos los requests del turno; reportarla
+  como un único request inflaba el contexto y adelantaba compactaciones. Ahora se reporta
+  la ocupación real (`usage_update.used`), también en los pasos con tools.
+- **Sesiones nunca cerradas**: cada una dejaba vivo un proceso `claude`. Ahora
+  `session/close` al descartar, TTL de inactividad (15 min; subagentes 2 min) y LRU de 6.
+- **Títulos basura** (`<invoke name="Read">`): con `preset` las instrucciones de título no
+  llegaban a Claude. El plugin titula a partir del primer mensaje, sin llamar al modelo.
+- **Subagentes de OpenCode sobre `acp`** (heredan el modelo del padre): sin perfil, cada tool
+  de OpenCode pedía permiso al puente y el `general` (sin `question`) las veía denegadas.
+  Ahora todo agente auto-permite las tools de OpenCode y el puente deniega con motivo si el
+  agente no puede preguntar. Reglas publicadas para todos los agentes.
+- Cambiar a un agente con otro perfil nativo reutilizaba la sesión con el perfil viejo;
+  ahora la **bifurca** (`session/fork`) conservando el contexto.
+- Volver de plan a `claude-code` rebajaba a `default` el modo elegido al aprobar el plan.
+- El resume tras reinicio reenviaba tráfico propio y se hacía aunque el registro fuese de
+  otra conversación; el registro se actualiza también a mitad de turno.
+- Una sesión perdida en el agente (proceso `claude` muerto) fallaba en cada turno; ahora se
+  suelta y se reanuda.
+- `mcp-runtime` ignoraba SIGTERM (registrar el handler desactiva la salida por defecto).
+
+### Added
+
+- **Compactación nativa**: `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75` (`autoCompactPct`) para que
+  Claude compacte antes que OpenCode; si OpenCode compacta, el resumen sale de la **sesión
+  viva** (antes: replay completo en frío, 17K+ caracteres en la grabación).
+- **`historyMode`** (`shadow` por defecto): huella por anclas (mensajes del usuario + ids de
+  tools) inmune a re-renderizados de V2 (reasoning→texto, cambio de modelo), recordatorios de
+  plan transitorios y etiquetas de DCP. En `shadow` solo registra discrepancias; `v2` decide
+  y además adopta el checkpoint de OpenCode o pone al día con el de otro modelo.
+- **`smartRevert`** (por defecto): un revert bifurca la sesión justo antes del mensaje
+  revertido (`resumeSessionAt`) en vez de replay; `false` lo desactiva.
+- **Un proceso del agente para todos los modelos** del provider; cambio de modelo con
+  `session/set_model` sin perder la sesión.
+- **Actividad nativa portable** (`nativeActivity`): Task/WebSearch/Skill dejan una línea
+  `⚙ …` (con su resultado) en la respuesta → visible para cualquier modelo.
+- **ExitPlanMode** con las opciones reales (auto / aceptar ediciones / aprobar cada edición /
+  seguir planificando); una respuesta escrita vuelve como feedback.
+- Límite de uso de Claude → error claro, no reintentable ("cambia de modelo").
+- Replay acotado (~400K caracteres) y etiquetado; petición actual aparte.
+- Catálogo inicial de **Code Mode** de V2 reenviado como contexto.
+- Log a fichero `~/.acp-model-provider/logs/`, grabador `ACP_RECORD`,
+  `scripts/sanitize-recording.mjs`, suite `npm test`, `scripts/verify-smart-revert.mjs`.
+- Opciones: `historyMode`, `catchupResultChars`, `parallelTools`, `toolBatchMs`,
+  `autoCompactPct`, `nativeActivity(Chars)`, `maxLiveSessions`, `idle/childSessionTtlMs`,
+  `smartRevert`; plugin: `titleFromModel`.
+
+### Changed
+
+- El `Read` nativo sale del perfil por defecto (lo que leía no quedaba en el historial de
+  OpenCode); el `read` de V2 cubre imágenes/PDF.
+- `allowedTools` vale `["mcp__opencode"]` por defecto para cualquier agente.
+- Los agentes `claude-code*` deniegan `compress` (opencode-dcp).
+- Registro de sesiones con caché en memoria y poda (30 días / 500 entradas).
+
 ## 0.9.0 — OpenCode V2 (2026-10-01)
 
 > ⚠️ **0.9.0+ solo funciona con OpenCode V2; para OpenCode V1 conserva 0.8.x.**

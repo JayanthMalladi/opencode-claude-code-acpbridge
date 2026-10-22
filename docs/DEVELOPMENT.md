@@ -55,21 +55,26 @@ El corazón. Implementa `doStream`/`doGenerate` y mantiene una **sesión ACP per
 - **Identidad de sesión**: una `TurnState` por conversación (`Map` indexado por el sessionID de OpenCode), más un índice por `sessionId` ACP para enrutar los callbacks del agente. Recrear la sesión tira el prompt cache de Claude (vive y muere con ella), así que se recrea lo mínimo posible:
   - `systemKey` solo cuenta **si el system de verdad viaja** — con `systemPromptMode: "preset"` (default) no viaja, así que cambiar de agente en OpenCode **no** recrea nada.
   - `toolsKey` ya **no** recrea: un set de tools distinto se aplica en caliente con `notifications/tools/list_changed` por el canal MCP.
-  - `cfgKey` (thinking/systemPromptMode) sí recrea: son parámetros de creación.
-  - La llamada del small model (títulos/resúmenes, `tools=0`) va a una sesión efímera aparte.
-- **Sincronía de historial**: `sentKeys` guarda una huella por mensaje no-system ya enviado. Comparando con el prompt entrante se distingue *append* (envía solo la cola), *revert* (el prompt es prefijo estricto → sesión nueva) y *divergencia* por compactación (→ sesión nueva). En el catch-up se **omiten** los `tool-call`/`tool-result` propios (prefijo nonce del host: el agente ya los tiene) y se truncan los ajenos.
+  - `cfgKey` = **perfil de creación** completo (`buildClaudeCodeOptions` sin model/effort + systemPromptMode): si cambia (otro agente con otras tools nativas), la sesión se **bifurca** (`unstable_forkSession` con el `_meta` nuevo, `forkInPlace`) en vez de recrearse.
+  - Un modelo acp distinto se aplica con `unstable_setSessionModel`: hay **un** orquestador (un proceso del agente) para todos los modelos del provider; cada modelo es un `ACPModelView`.
+  - La llamada sin tools (títulos/resúmenes en uso programático) va a una sesión efímera aparte que se cierra al responder; en OpenCode el título lo pone el plugin sin modelo.
+  - Mutex por conversación (`withLock`) alrededor de crear/reutilizar sesión.
+- **Sincronía de historial** (`history.ts`): `sentKeys` (huella legacy por mensaje) y `sentAnchors` (mensajes del usuario + ids de tools) — `historyMode` decide cuál manda (`shadow` registra discrepancias). Se distingue *append* (envía solo la cola), *revert* y *divergencia*. La cola se limpia de **salida propia** (`dropOwnLead`: textos emitidos —`ownTexts`— e ids con prefijo propio —`ownPrefixes`—); los turnos de otro modelo van como `<other_model_turn>`; un replay completo es `<conversation_history>` acotado.
+- **Turnos y generaciones**: cada `session/prompt` lleva una generación (`sendPrompt`); la finalización de una generación vieja (cancelada o fusionada por la cola de prompts del agente) se ignora. `abortTurn` cancela, rechaza las llamadas MCP diferidas y drena permisos; `settle` espera a que el prompt viejo termine.
 - **Buffer de stream** (`emit`/`flushPending`): texto y thinking llegan por stdio ACP mientras las tool-calls llegan por el socket TCP del host, sin orden garantizado. Cuando una tool-call cierra el stream, lo que sigue llegando se **bufferiza** y se vuelca en el stream de continuación en vez de perderse.
 - **Contexto factual** (`contextBlocks`): con `preset` el system de OpenCode no llega al agente, así que su bloque `<env>` (y `<available_references>`) se reenvía como contenido de **usuario** — completo la primera vez, luego solo el delta.
 - **`effectiveCtrl(options)`**: fusiona `config.claudeCode` con `providerOptions.acp` (mode/effort/thinking/systemPromptMode por agente/llamada).
 - **`applySessionConfig`**: aplica `mode` (`setSessionMode`) y `effort` (`setSessionConfigOption`) **en caliente** (sin recrear).
 - **Flujo de tools diferidas** (ver §4).
-- **Usage**: `mapUsage`/`subtractUsage` → emite el consumo de tokens por turno en el `finish`.
+- **Usage** (`usageNow`): el tamaño del contexto sale de `usage_update.used` (último request); `PromptResponse.usage` es la SUMA del turno y solo aporta las proporciones de caché.
+- **Compactación**: `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (`autoCompactPct`); una petición de compactación de OpenCode (`requestKind`) se sirve en la sesión viva (`serveCompaction`); en `v2`, `/compact` nativo oculto (`nativeCompact`) y adopción del checkpoint.
+- **Recursos**: `session/close` (vía `extMethod`) al descartar; barrido de inactividad (`sweepIdle`, TTL por sesión y subagente), LRU `maxLiveSessions`.
 
 ### `acp/mcp-host.ts` — `McpHost`
 TCP server dentro del provider. `setTools()` recibe las tools de OpenCode; cuando el runtime pide `getTools`/`callTool`, responde. **Difiere** los `callTool`: guarda `{socket, runtimeId}` por `toolCallId` y resuelve cuando OpenCode entrega el resultado (`resolveToolCall`).
 
 ### `acp/mcp-runtime.ts`
-MCP server **stdio sin dependencias** (solo `node:net`/`node:readline`) que el agente spawnea. Reenvía `tools/list`/`tools/call` por TCP al host (puerto en `ACP_TOOL_HOST_PORT`). No impone timeout cliente → el `tools/call` puede esperar a OpenCode tanto como `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT`. Blindado contra `EPIPE`/`ECONNRESET` (el agente lo mata al cerrar).
+MCP server **stdio sin dependencias** (solo `node:net`/`node:readline`) que el agente spawnea. Reenvía `tools/list`/`tools/call` por TCP al host (puerto en `ACP_TOOL_HOST_PORT`). No impone timeout cliente → el `tools/call` puede esperar a OpenCode tanto como permita el agente (`MCP_TOOL_TIMEOUT`, ≈ 27 h en claude-agent-acp 0.31). Reenvía `_meta["claudecode/toolUseId"]` y los `notifications/cancelled` del agente al host. Blindado contra `EPIPE`/`ECONNRESET` (el agente lo mata al cerrar).
 
 ### `acp/claude-config.ts`
 `ClaudeCodeControl` (tipo) + `buildClaudeCodeOptions` (→ `_meta.claudeCode.options`) + `resolveConfigDir`/`prepareIsolatedConfigDir`. El **"cerebro limpio"** por defecto: `tools:[]`, `settingSources:[]`, `strictMcpConfig:true` (sin connectors claude.ai), y un `CLAUDE_CONFIG_DIR` aislado con `~/.claude/.credentials.json` **symlinkeado** (auth sin heredar el ecosistema). `prepareIsolatedConfigDir` **re-enlaza el symlink en cada arranque**: el agente puede reemplazarlo con un archivo obsoleto al refrescar el token → 401; re-linkear lo mantiene sincronizado con `~/.claude`.
@@ -102,6 +107,8 @@ Factory del provider (una instancia por `modelId`), config por env vars, y el co
 4. OpenCode ejecuta la tool (permisos/TUI) y en el **siguiente `doStream`** trae el `tool-result`.
 5. El provider detecta la continuación, hace `McpHost.resolveToolCall(id, result)` → el `callTool` MCP por fin responde → el agente continúa el mismo turno.
 
+Detalles: las tool-calls se agrupan por paso (`addStepItem`/`closeStep`; las de solo lectura esperan `toolBatchMs` a sus hermanas, todas salen con **un** `finish`). Las que llegan con el stream cerrado se encolan (`queuedItems`) y salen al inicio de la siguiente continuación. Si la continuación trae **mensajes tras los resultados** (steer, `<system-update>`, resultado de subagente, prefill de max-steps) se entregan al turno en curso (prompt encolado, o pegados al último resultado si el agente no tiene `promptQueueing`). Si un resultado es `aborted` y hay mensaje nuevo, el turno viejo se cancela y el mensaje va como turno nuevo. `notifications/cancelled` del agente retira una llamada aún no emitida.
+
 ### Sesión: reuse / reset / resume — mensajes incrementales (requisito central)
 ACP es una sesión viva: el agente recuerda todo lo que ya le enviaste, así que **reenviar la historia entera cada turno quema tokens y rompe el prompt cache** (commit `4a7d7be`, v0.8.0). OpenCode, en cambio, siempre construye el prompt completo; el provider decide qué viaja de verdad:
 
@@ -121,7 +128,7 @@ Cuando el agente usa una tool **nativa** (Skill/Read/NotebookEdit/ExitPlanMode/�
 2. **`ask` → diálogo `question`**: `onRequestPermission` devuelve una Promise pendiente y **emite a OpenCode** un tool-call de la tool nativa **`question`** (`{questions:[{question, header, options:[Allow once, Always allow?, Deny]}]}`), `finish` y cierra el controller (mismo patrón que `onToolCall`). OpenCode ejecuta `question` (por eso los agentes inyectados llevan `{action:"question",resource:"*",effect:"allow"}`) y el diálogo aparece en la TUI.
 3. El siguiente `doStream` trae el tool-result de `question`; `detectContinuation` lo distingue (`pendingPermissions` vs `pendingTools`) y `questionVerdict` lo parsea: etiquetas exactas de output tipado (`{answers:[["Always allow"]]}`) o texto renderizado (`"q"="Always allow"`) → `Always allow` persiste la regla en `always.json` (`addAlwaysRule`); **cualquier cosa ambigua falla CERRADA** (deny), incluido el free-form "type your own answer".
 
-Robustez (heredada de V1): `onCancel` **no derriba** la sesión con permiso diferido en vuelo (OpenCode pausa para el diálogo) pero arma un **watchdog** que libera si la continuación nunca llega; `endTurn`/reuse **drenan** `pendingPermissions` como deny para que el agente nunca cuelgue; sin turno vivo se aprueba (el agent-blocking es peor). Las tools comunes van en `allowedTools: ["mcp__opencode"]` (no piden `requestPermission`; OpenCode las orquesta).
+Robustez: en V2 OpenCode lee cada stream hasta el final, así que un `cancel` es un **aborto real** (`onCancel` → `abortTurn`), no una pausa como en V1 (ya no hay watchdog). `endTurn`/reuse **drenan** `pendingPermissions` como deny para que el agente nunca cuelgue; sin turno vivo se deniega. Una petición que llega con el stream cerrado se **encola** para la siguiente continuación. Los ids de pregunta llevan el prefijo propio de la sesión (`<idPrefix>perm_N`). Si el agente no tiene `question` (`hasQuestion` desde el hook), se deniega con motivo. `ExitPlanMode` muestra las opciones reales del agente (`askPlanApproval`); una respuesta escrita rechaza y llega como feedback. `allowedTools: ["mcp__opencode"]` es el default para cualquier agente.
 
 ### Facturación (suscripción vs extra usage)
 Anthropic clasifica la sesión por el **system prompt**: si reenvías el de OpenCode (`append`/`replace`), la trata como app de terceros → *extra usage*; con `preset` (default) usa el preset oficial `claude_code` → **suscripción**. Decidido empíricamente; ver [acp-subscription-billing](../README.md#system-prompt-y-facturación-suscripción-vs-extra-usage).
@@ -129,6 +136,8 @@ Anthropic clasifica la sesión por el **system prompt**: si reenvías el de Open
 ---
 
 ## 5. Build y pruebas
+
+**Antes de tocar la sincronía de historial**: `npm test`. El agente falso (`test/fake-agent.mjs`) habla ACP real y conduce el `mcp-runtime` real; `test/characterization.test.mjs` fija los comportamientos (KEEP) y cada fallo corregido; `test/fixtures/v2/*.jsonl` son prompts **reales** de OpenCode V2 (grabados con `ACP_RECORD`, anonimizados con `scripts/sanitize-recording.mjs`). Un cambio en `history.ts` sin una fixture real que lo respalde no entra — esta lógica ya se rompió varias veces (0.8.0, 9299af9).
 
 ```bash
 npm install
