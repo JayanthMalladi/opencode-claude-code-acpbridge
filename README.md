@@ -101,7 +101,7 @@ Sin `command` (ni `ACP_COMMAND`) el plugin **no auto-registra** nada: queda para
 }
 ```
 
-En desarrollo, apunta por ruta de directorio: `"package": "/ruta/a/acp-model-provider"` en `plugins` (ver nota arriba sobre `index.js`).
+En desarrollo, apunta por ruta de directorio: `"package": "/ruta/a/opencode-claude-code-acpbridge"` en `plugins` (ver nota arriba sobre `index.js`).
 
 En V2 los permisos de tool son un **ruleset** por agente (`agents.<n>.permissions`, por eso los agentes inyectados llevan `question: allow`); p. ej. `"permissions": [{ "action": "edit", "resource": "*", "effect": "allow" }]`.
 
