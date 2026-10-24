@@ -684,7 +684,13 @@ test("#23: leaving the plan agent after approving with acceptEdits keeps acceptE
 test("2c: a usage-limit failure becomes a clear, non-retryable error", async () => {
   const { limitError } = await import("../dist/provider/model.js");
   const e = limitError(new Error("Claude AI usage limit reached|1792700000"));
-  assert.match(e.message, /límite de uso alcanzado.*Cambia de modelo/);
+  assert.match(e.message, /usage limit reached.*Switch to another model/);
+  // OpenCode >= 2.1 retries unclassified errors; 402 + x-should-retry:false → QuotaExceeded, no retry.
+  const { APICallError } = await import("@ai-sdk/provider");
+  assert.ok(APICallError.isInstance(e));
+  assert.equal(e.statusCode, 402);
+  assert.equal(e.isRetryable, false);
+  assert.equal(e.responseHeaders["x-should-retry"], "false");
   assert.doesNotMatch(e.message, /try again|retry|overloaded|exhausted|unavailable/i);
   assert.equal(limitError(new Error("Overloaded")), undefined);
 });

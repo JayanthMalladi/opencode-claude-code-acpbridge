@@ -2,6 +2,34 @@
   "name": "opencode-claude-code-acpbridge",
   "version": "0.10.0",
   "description": "Use Claude Code inside OpenCode. An OpenCode plugin + model provider that bridges Claude Code over ACP (Agent Client Protocol): run it on your Claude subscription while OpenCode orchestrates the tools, permissions and TUI.",
+  "license": "MIT",
+  "author": "Antonio Orizondo Leyva",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aorizondo/opencode-claude-code-acpbridge.git"
+  },
+  "homepage": "https://github.com/aorizondo/opencode-claude-code-acpbridge#readme",
+  "bugs": {
+    "url": "https://github.com/aorizondo/opencode-claude-code-acpbridge/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "claude-code",
+    "claude",
+    "anthropic",
+    "acp",
+    "agent-client-protocol",
+    "ai-sdk",
+    "language-model",
+    "provider",
+    "opencode-v2",
+    "claude-subscription"
+  ],
+  "engines": {
+    "node": ">=18",
+    "opencode": ">=2.0.14"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,37 +47,14 @@
     "dist",
     "docs",
     "examples",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build",
-    "test": "tsc && node --test --test-timeout=20000 \"test/*.test.mjs\""
-  },
-  "keywords": [
-    "opencode",
-    "opencode-plugin",
-    "claude-code",
-    "claude",
-    "anthropic",
-    "acp",
-    "agent-client-protocol",
-    "ai-sdk",
-    "language-model",
-    "provider"
-  ],
-  "license": "MIT",
-  "author": "Antonio Orizondo",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/aorizondo/opencode-claude-code-acpbridge.git"
-  },
-  "homepage": "https://github.com/aorizondo/opencode-claude-code-acpbridge#readme",
-  "bugs": {
-    "url": "https://github.com/aorizondo/opencode-claude-code-acpbridge/issues"
-  },
-  "engines": {
-    "node": ">=18"
+    "prepublishOnly": "npm test && npm run check:install",
+    "test": "tsc && node --test --test-timeout=20000 \"test/*.test.mjs\"",
+    "check:install": "node scripts/check-install.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.14.1",
@@ -62,7 +67,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/provider": "^3.0.0",
-    "@opencode/plugin": ">=2.0.14",
+    "@opencode/plugin": "^2.0.14",
     "ai": "^6.0.0"
   },
   "peerDependenciesMeta": {

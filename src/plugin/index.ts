@@ -9,8 +9,10 @@ import { publishAgentRules } from "./bridge-rules.js";
 import { detectClaudeExecutable } from "../provider/factory.js";
 
 import { logger } from "../log.js";
+import { compatibilityWarnings } from "./compat.js";
 
-const dbg = logger("acp-plugin").dbg;
+const log = logger("acp-plugin");
+const dbg = log.dbg;
 const DISCOVERY_TTL = 60 * 60 * 1000; // 1h
 
 /** Registro del provider en vuelo por providerId: si la config recarga dos veces
@@ -95,7 +97,7 @@ const NATIVE_BASE: Record<string, any> = {
 function agentDefs(opts: Record<string, any>): Record<string, any> {
   if (opts.agents && opts.agents !== true && isPlainObject(opts.agents)) return opts.agents;
   if (opts.agents && opts.agents !== true && !isPlainObject(opts.agents)) {
-    dbg("agents config inválida — usando defaults");
+    dbg("invalid agents config — using defaults");
   }
   return {
     "claude-code": {
@@ -189,6 +191,8 @@ export const ACPPlugin = Plugin.define({
           discovered = await discoverAgent(discOpts as any);
           writeCache("discovery.json", discovered, key);
         }
+        for (const warning of compatibilityWarnings({ opencode: ctx.app?.version, agent: discovered?.agentVersion }))
+          log.note(`compat: ${warning}`);
 
         const agentModels = discovered?.models?.length ? discovered.models : [{ id: "default", name: "Claude Code (ACP)" }];
         const catalog = await loadAnthropicCatalog();
@@ -235,7 +239,9 @@ export const ACPPlugin = Plugin.define({
             for (const [name, raw] of Object.entries(defs)) {
               const def = raw as any;
               const user = isPlainObject(opts.agents) ? opts.agents[name] : undefined;
-              // V1-style per-agent Claude options, overridden by the user's copy.
+              // Claude options of this agent. A user `options.agents` record REPLACES the
+              // built-in set (defs === opts.agents), so nothing is merged over NATIVE_BASE here;
+              // tweaks to the built-in agents belong in OpenCode's own `agents` section.
               agentOptions.set(name, deepMerge(def.options ?? {}, isPlainObject(user) ? user.options ?? {} : {}));
               // A `model` the user already declared (config/other plugin) wins: only
               // fill the field when it is missing, so the transform stays idempotent.

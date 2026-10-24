@@ -30,6 +30,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { APICallError } from "@ai-sdk/provider";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -349,15 +350,25 @@ function errorText(err: unknown): string {
 /** Claude's usage/rate limit, rewritten so the user knows to switch models — and in
  *  words OpenCode's retry classifier doesn't match ("try again", "overloaded"…), so it
  *  isn't retried in a loop against an exhausted subscription. */
-export function limitError(err: unknown): Error | undefined {
+export function limitError(err: unknown): APICallError | undefined {
   const raw = errorText(err);
   if (!/usage limit|rate[ _-]?limit|billing_error|hit your limit|limit reached|out of (?:extra )?usage|quota exceeded|\b429\b/i.test(raw)) return undefined;
   const epoch = raw.match(/\|(\d{10})\b/)?.[1];
   const resets = raw.match(/resets? (?:at )?([^.,;\n"]+)/i)?.[1]?.trim();
   const when = epoch ? new Date(Number(epoch) * 1000).toLocaleString() : resets;
-  const e = new Error(`Claude Code: límite de uso alcanzado${when ? ` (se restablece: ${when})` : ""}. Cambia de modelo en OpenCode para continuar; la sesión de Claude se conserva para cuando vuelvas.`);
-  e.name = "ClaudeUsageLimit";
-  return e;
+  // An APICallError with HTTP 402 and `x-should-retry: false`: OpenCode >= 2.1 retries any
+  // error it cannot classify (about 10 attempts over ~84 s); this one it classifies as
+  // QuotaExceeded and fails at once, so the user can switch models right away.
+  // (APICallError.isInstance matches by a global symbol, so the host's AI SDK copy accepts it.)
+  return new APICallError({
+    message: `Claude Code: usage limit reached${when ? ` (resets: ${when})` : ""}. Switch to another model in OpenCode to continue; the Claude Code session is kept for when you come back.`,
+    url: "acp://claude-code",
+    requestBodyValues: {},
+    statusCode: 402,
+    responseHeaders: { "x-should-retry": "false" },
+    isRetryable: false,
+    cause: err,
+  });
 }
 
 /** Total text size of a prompt (diagnostics). */
@@ -533,7 +544,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     // límite — se descartan los chunks más antiguos.
     if (t.pending.length > MAX_PENDING_PARTS) {
       t.pending.splice(0, t.pending.length - MAX_PENDING_PARTS);
-      dbg(`pending desbordado (>${MAX_PENDING_PARTS}) — descartados los más antiguos`);
+      dbg(`pending overflow (>${MAX_PENDING_PARTS}) — dropped the oldest parts`);
     }
   }
 
@@ -751,7 +762,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     if (!sessionId) throw new Error("failed to create or resume an ACP session");
     // The ACP sessionId IS the Claude Code session id: surfacing it lets the user
     // pick the conversation back up natively.
-    note(`session ${sessionId}${replayFull ? "" : " (resumed)"} — retomable con: claude --resume ${sessionId}`);
+    note(`session ${sessionId}${replayFull ? "" : " (resumed)"} — resumable with: claude --resume ${sessionId}`);
 
     t = {
       key,
@@ -866,7 +877,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       this.byAcpSession.set(t.sessionId, t);
       old.host.stop();
       this.closeAcpSession(old.id);
-      note(`session ${old.id} → fork ${t.sessionId} (${why}, context kept) — retomable con: claude --resume ${t.sessionId}`);
+      note(`session ${old.id} → fork ${t.sessionId} (${why}, context kept) — resumable with: claude --resume ${t.sessionId}`);
       return true;
     } catch (e) {
       host.stop();
@@ -1457,7 +1468,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         // same tool profile, so this is informational, not a call to action.
         const id = `mode${++this.idSeq}`;
         this.emit(t, { type: "text-start", id });
-        this.emit(t, { type: "text-delta", id, delta: `\n_Modo de sesión: ${from} → ${t.appliedMode}_\n` });
+        this.emit(t, { type: "text-delta", id, delta: `\n_Session mode: ${from} → ${t.appliedMode}_\n` });
         this.emit(t, { type: "text-end", id });
       }
       return;
@@ -1624,7 +1635,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         t.appliedModel = ctrl.model;
         dbg(`model → ${ctrl.model}`);
       } catch (e) {
-        note(`aviso: no se pudo aplicar el modelo ${ctrl.model} (${e instanceof Error ? e.message : String(e)})`);
+        note(`warning: could not apply model ${ctrl.model} (${e instanceof Error ? e.message : String(e)})`);
       }
     }
     // A CHANGED request (the user reselected the plan agent) overrides a mode the agent
@@ -1655,7 +1666,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       } catch (e) {
         // Not a debug detail: a rejected effort means the user picked `:max` and is
         // silently getting something else — including no visible reasoning.
-        note(`aviso: no se pudo aplicar effort=${ctrl.effort} (${e instanceof Error ? e.message : String(e)})`);
+        note(`warning: could not apply effort=${ctrl.effort} (${e instanceof Error ? e.message : String(e)})`);
       }
     }
   }
