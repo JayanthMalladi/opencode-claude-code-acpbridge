@@ -6,7 +6,7 @@ All notable changes to `opencode-claude-code-acpbridge`. The format is based on
 > **OpenCode V2 only since 0.9.0.** Versions 0.9.0 and later load only in OpenCode V2. If you
 > are still on OpenCode V1, stay on 0.8.x. See [MIGRATION_V2.md](MIGRATION_V2.md).
 
-## [Unreleased]
+## [0.10.1] — 2026-10-23
 
 ### Fixed
 
