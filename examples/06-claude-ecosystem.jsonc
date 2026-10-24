@@ -1,23 +1,27 @@
 {
-  // Caso avanzado: en lugar del "cerebro limpio", quieres que el agente herede
-  // TU Claude Code real — skills, subagents, hooks y MCP servers de ~/.claude.
+  // Advanced: instead of the "clean brain", let Claude Code load more of YOUR real
+  // Claude Code setup — settings, hooks and agents from ~/.claude and the project,
+  // plus the MCP servers and claude.ai connectors bound to your account.
   //
-  // ⚠️ Implicaciones:
-  //  - configDir:false hace que el agente use tu ~/.claude (con su auth y ecosistema).
-  //  - settingSources carga settings (hooks/agents) de user/project/local.
-  //  - Si esos hooks/agents añaden un system propio agresivo, puede dispararse
-  //    EXTRA USAGE (igual que con append/replace). Vigila con ACP_DEBUG.
+  // ⚠️ Implications:
+  //  - settingSources loads settings (hooks, agents, skills) from user/project/local.
+  //  - strictMcpConfig:false lets through MCP servers from ~/.claude.json and the
+  //    claude.ai connectors (Gmail, Drive, Notion…) as extra native tools.
+  //  - If those hooks/agents add an aggressive system prompt of their own, the session
+  //    may be billed as EXTRA USAGE (like append/replace). Check with ACP_DEBUG=1.
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     { "package": "opencode-claude-code-acpbridge",
       "options": {
         "command": "claude-agent-acp",
         "claudeCode": {
-          "configDir": false,                       // hereda ~/.claude (en vez de "isolated")
-          "settingSources": ["user", "project"],    // carga settings (hooks/agents/skills)
-          "tools": ["read", "grep", "glob"]          // habilita algunas tools NATIVAS de Claude
-          // OJO: habilitar tools nativas mezcla dos ejecutores (Claude + OpenCode).
-          // Para "OpenCode orquesta" puro, deja tools en [] (el default).
+          // Already the default: Claude Code keeps its state in your ~/.claude, so sessions
+          // can be resumed with `claude --resume <id>`. "isolated" would use a clean dir instead.
+          "configDir": false,
+          "settingSources": ["user", "project"],   // load settings (hooks/agents/skills)
+          "strictMcpConfig": false                 // let ~/.claude.json MCP servers and claude.ai connectors in
+          // Native file/shell tools (Bash, Read, Write, Edit…) stay disabled on the built-in
+          // agents on purpose: OpenCode runs those, so everything stays in its history.
         }
       } }
   ]

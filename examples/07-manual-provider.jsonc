@@ -1,41 +1,54 @@
 {
-  // Control total: declaras el provider `acp` a mano en la config de OpenCode.
-  // En V2 normalmente NO hace falta: con `options.command` el plugin
-  // auto-registra el provider (V2 resuelve el paquete como `aisdk:<spec>`).
-  // Declararlo a mano sirve para fijar modelos, costes y límites exactos, o en
-  // entornos sin descubrimiento. El plugin DETECTA `provider.acp` declarado y
-  // NO lo toca (guard nuevo).
+  // Full control: declare the `acp` provider yourself in OpenCode's config.
+  // Normally you DON'T need this: with `options.command` the plugin registers the
+  // provider on its own (with the models Claude Code reports and their metadata).
+  // Declaring it by hand is for pinning the settings, names, costs and limits of the
+  // models you list, or for setups where discovery can't run. When `acp` is already
+  // declared, the plugin doesn't register its own definition. In OpenCode 2.1.1 the
+  // values you set here win, and models or variants you don't list still show up
+  // from discovery: this pins values, it doesn't hide models.
+  //
+  // This uses the native OpenCode V2 `providers` format. (V2 still accepts the old V1
+  // `provider` block with `npm`/`options`, but migrates it and drops unknown fields.)
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
+  "providers": {
     "acp": {
-      "npm": "opencode-claude-code-acpbridge",   // en dev: RUTA DEL DIRECTORIO local (no `file://`)
       "name": "Claude Code (ACP)",
-      "options": {
+      // `aisdk:` + the npm package. For local development use the built entry point:
+      // "aisdk:file:///path/to/opencode-claude-code-acpbridge/dist/index.js"
+      "package": "aisdk:opencode-claude-code-acpbridge",
+      // Passed to the provider factory (same keys as the plugin options below).
+      "settings": {
         "command": "claude-agent-acp",
-        "claudeExecutable": "/home/usuario/.local/bin/claude",
+        "claudeExecutable": "/home/you/.local/bin/claude",
         "claudeCode": { "systemPromptMode": "preset" }
       },
       "models": {
         "default": {
-          "id": "default", "name": "Opus 4.7 (recommended)",
-          "tool_call": true, "reasoning": true, "attachment": true,
+          "name": "Opus (recommended)",
+          "capabilities": { "tools": true },
           "limit": { "context": 1000000, "output": 64000 },
-          "cost": { "input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25 },
-          "variants": { "low": {"effort":"low"}, "high": {"effort":"high"}, "max": {"effort":"max"} }
+          "cost": { "input": 5, "output": 25, "cache": { "read": 0.5, "write": 6.25 } },
+          // Effort levels as variants: picking "acp/default#high" sends { effort: "high" }.
+          "variants": [
+            { "id": "low",  "settings": { "effort": "low" } },
+            { "id": "high", "settings": { "effort": "high" } },
+            { "id": "max",  "settings": { "effort": "max" } }
+          ]
         },
         "sonnet": {
-          "id": "sonnet", "name": "Sonnet 4.6",
-          "tool_call": true, "reasoning": true, "attachment": true,
-          "limit": { "context": 1000000, "output": 64000 },
-          "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
+          "name": "Sonnet",
+          "capabilities": { "tools": true },
+          "limit": { "context": 200000, "output": 64000 },
+          "cost": { "input": 3, "output": 15, "cache": { "read": 0.3, "write": 3.75 } }
         },
-        "haiku": { "id": "haiku", "name": "Haiku 4.5", "tool_call": true, "reasoning": true }
+        "haiku": { "name": "Haiku", "capabilities": { "tools": true } }
       }
     }
   },
-  // El plugin se sigue cargando para inyectar los agentes y el context hook
-  // (`session.hook("context")`: sessionID/resume + options por agente);
-  // como `provider.acp` ya existe, no lo reescribe.
+  // Keep loading the plugin: it injects the agents and passes the per-call context
+  // (session link, resume data, per-agent options). Since `acp` already exists, it
+  // doesn't overwrite it.
   "plugins": [
     { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ]

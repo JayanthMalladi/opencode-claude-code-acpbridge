@@ -1,36 +1,35 @@
 {
-  // Fijar modelo y esfuerzo de razonamiento (OpenCode V2).
+  // Choose the model and the reasoning effort (OpenCode V2 only).
   //
-  // El esfuerzo (effort) es una VARIANTE del modelo: en la TUI eliges
-  // p. ej. "acp/opus#max" o "acp/haiku#low" (sintaxis V2 `provider/model#variant`).
-  // Aquí mostramos cómo fijarlo por agente (config `agents`) y/o con las
-  // options ACP del agente en las options del plugin.
+  // The effort is a VARIANT of the model: in the TUI you pick e.g. "acp/default#max"
+  // or "acp/haiku#low" (V2 syntax `provider/model#variant`). Available efforts:
+  // low, medium, high, xhigh, max (only on models that expose effort levels).
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     { "package": "opencode-claude-code-acpbridge",
       "options": {
         "command": "claude-agent-acp",
         "claudeCode": {
-          // Por defecto para cualquier uso del provider (si no lo fija el agente):
+          // Defaults for every use of the provider, when the agent/variant doesn't set them:
           "effort": "high",
-          "thinking": { "type": "enabled", "budgetTokens": 16000 }
-        },
-        // Options ACP por agente (mode, effort, …): el context hook las inyecta
-        // por llamada y se aplican en caliente (setSessionMode/setSessionConfigOption).
-        "agents": {
-          "claude-code-fast": {
-            "description": "Claude Code rápido (Haiku, esfuerzo bajo)",
-            "model": "haiku", "variant": "low",
-            "options": { "mode": "default" }
-          }
+          // Setting `thinking` replaces the default ({type:"enabled", display:"summarized"}).
+          // Keep `display: "summarized"`, or the reasoning block stops showing in OpenCode.
+          "thinking": { "type": "enabled", "budgetTokens": 16000, "display": "summarized" }
         }
       } }
   ],
   "agents": {
-    // Máxima calidad: Opus con esfuerzo máximo (`model#variant`).
+    // Maximum quality for the built-in agent: Opus with the maximum effort.
     "claude-code": { "model": "acp/default#max" },
-    // El agente nuevo (definido arriba en las options del plugin) aparece en el
-    // selector como primario:
-    "claude-code-fast": { "mode": "primary" }
+    // A fast extra agent, declared in OpenCode's own `agents` section: Haiku with low
+    // effort. It runs on the acp provider with the plain profile (OpenCode's tools, no
+    // native Claude Code extras such as skills or native subagents).
+    "claude-code-fast": {
+      "description": "Fast Claude Code (Haiku, low effort)",
+      "mode": "primary",
+      "model": "acp/haiku#low"
+    }
   }
+  // Don't add agents through the plugin's `options.agents` just to get an extra one:
+  // that list REPLACES the built-in claude-code / claude-code-plan (see 05-custom-agents.jsonc).
 }

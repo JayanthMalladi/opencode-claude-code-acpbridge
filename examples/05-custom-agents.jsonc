@@ -1,14 +1,17 @@
 {
-  // Definir TUS propios agentes inyectados (por modelo, por modo), reemplazando
-  // los de serie. `options.mode` es el modo ACP; `variant` el esfuerzo.
+  // Define YOUR OWN injected agents (per model, per mode) in place of the built-in
+  // ones. `options.mode` is the Claude Code session mode; `variant` is the effort.
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     { "package": "opencode-claude-code-acpbridge",
       "options": {
         "command": "claude-agent-acp",
-        // Esta lista REEMPLAZA los agentes por defecto (claude-code / claude-code-plan).
-        // Usa "agents": false para no inyectar ninguno y declararlos todos a mano
-        // en la sección `agents` de este mismo fichero.
+        // This list REPLACES the built-in agents (claude-code / claude-code-plan).
+        // Your agents get exactly the `options` you write here: they do NOT inherit the
+        // built-in native profile (native subagents, skills, project memory…). Add those
+        // options yourself if you want them, e.g. "nativeSkills": true.
+        // Use "agents": false to inject none and declare every agent yourself in the
+        // `agents` section of this file.
         "agents": {
           "cc-opus":   { "model": "default", "variant": "high", "options": { "mode": "default" } },
           "cc-sonnet": { "model": "sonnet",  "options": { "mode": "default" } },
@@ -16,14 +19,14 @@
         }
       } }
   ],
-  // `mode: "primary"` (y permisos) van en la sección `agents` de config V2:
+  // `mode: "primary"` (and permissions) go in OpenCode's own `agents` section:
   "agents": {
     "cc-opus":   { "mode": "primary" },
     "cc-sonnet": { "mode": "primary" },
     "cc-plan":   { "mode": "primary" }
   }
-  // Recuerda: lo que declares en `agents` manda sobre las defs del plugin
-  // (model/description solo se rellenan si faltan; options hacen merge profundo).
-  // Para "OpenCode es la única autoridad" sin round-trip, usa
-  // "options": { "mode": "bypassPermissions" } (sin puente de permisos).
+  // What you declare in `agents` wins over the plugin's definitions: the plugin only
+  // fills `model` and `description` when they are missing.
+  // To make OpenCode the only permission authority (no bridge for native tools), use
+  // "options": { "mode": "bypassPermissions" } on an agent.
 }

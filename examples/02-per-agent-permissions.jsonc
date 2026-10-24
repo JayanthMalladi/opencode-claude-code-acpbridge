@@ -1,34 +1,39 @@
 {
-  // Filtrar/controlar las herramientas del agente vía PERMISOS de OpenCode V2
-  // (ruleset), sin tocar el código del plugin. Tu sección `agents` tiene
-  // precedencia: declaras solo `permissions` y heredas model/options del plugin.
-  // El ruleset también alimenta el PUENTE de permisos (reglas allow/deny
-  // resuelven las tools nativas de Claude sin diálogo).
+  // Restrict what an agent may do with OpenCode V2 PERMISSION rules, without
+  // touching the plugin. Your `agents` section is merged with what the plugin
+  // injects: declare only `permissions` and the agent keeps its model and options.
+  //
+  // A rule is { action, resource, effect }; when several match, the LAST one wins.
+  // `action` is the OpenCode tool's permission name. Common ones: read, glob, grep,
+  // edit (also covers write and patch), shell, webfetch, websearch, question.
+  //
+  // The same rules also feed the plugin's PERMISSION BRIDGE: a rule whose `action`
+  // is a native Claude Code tool name (Skill, NotebookEdit, WebSearch…) answers
+  // that tool's permission request without a dialog. See 08-permission-bridge.jsonc.
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ],
   "agents": {
     "claude-code": {
-      // Read-only "duro": deniega escritura y shell, permite lectura/búsqueda/web.
+      // A strict read-only agent: no edits and no shell; reading, searching and web are fine.
       "permissions": [
-        { "action": "edit",  "resource": "*", "effect": "deny" },
-        { "action": "write", "resource": "*", "effect": "deny" },
-        { "action": "bash",  "resource": "*", "effect": "deny" },
-        { "action": "read",  "resource": "*", "effect": "allow" },
-        { "action": "grep",  "resource": "*", "effect": "allow" },
-        { "action": "glob",  "resource": "*", "effect": "allow" },
+        { "action": "edit",     "resource": "*", "effect": "deny" },
+        { "action": "shell",    "resource": "*", "effect": "deny" },
+        { "action": "read",     "resource": "*", "effect": "allow" },
+        { "action": "grep",     "resource": "*", "effect": "allow" },
+        { "action": "glob",     "resource": "*", "effect": "allow" },
         { "action": "webfetch", "resource": "*", "effect": "allow" }
       ]
     },
     "claude-code-plan": {
-      // El agente de plan: pedir confirmación para todo lo demás.
+      // The planning agent: never edit, and ask before running any shell command.
       "permissions": [
-        { "action": "edit", "resource": "*", "effect": "deny" },
-        { "action": "bash", "resource": "*", "effect": "ask" }
+        { "action": "edit",  "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "*", "effect": "ask" }
       ]
     }
   }
-  // Nota: las tools se ejecutan en OpenCode; este ruleset es la forma
-  // recomendada de acotarlas.
+  // Note: Claude proposes tool calls but OpenCode executes them, so these rules
+  // are the right place to limit what the agent can do.
 }
