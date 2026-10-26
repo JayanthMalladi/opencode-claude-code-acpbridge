@@ -33,8 +33,8 @@ Notes for all of them:
   - Refresh the model list: `npx opencode-claude-code-acpbridge sync claude-agent-acp`.
 - **Requirement.** The ACP agent is `@agentclientprotocol/claude-agent-acp` (binary
   `claude-agent-acp`); install it with `npm i -g @agentclientprotocol/claude-agent-acp`.
-- **CLI.** `opencode run --agent claude-code -m acp/default "…"`. Without `-m`, `run` ignores
+- **CLI.** `opencode run --agent claude-default -m acp/default "…"`. Without `-m`, `run` ignores
   the agent's `model` and uses the global model from your config: that's how the V2 CLI works.
-- **Agent definitions.** The plugin's `options.agents` **replaces** the built-in `claude-code` /
-  `claude-code-plan`. To add an extra agent and keep the built-in ones, declare it in OpenCode's
+- **Agent definitions.** The plugin's `options.agents` **replaces** the built-in `claude-<mode>`
+  agents. To add an extra agent and keep the built-in ones, declare it in OpenCode's
   own `agents` section with an `acp/…` model (example 04).

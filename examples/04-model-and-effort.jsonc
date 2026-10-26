@@ -20,16 +20,17 @@
   ],
   "agents": {
     // Maximum quality for the built-in agent: Opus with the maximum effort.
-    "claude-code": { "model": "acp/default#max" },
+    "claude-default": { "model": "acp/default#max" },
     // A fast extra agent, declared in OpenCode's own `agents` section: Haiku with low
     // effort. It runs on the acp provider with the plain profile (OpenCode's tools, no
-    // native Claude Code extras such as skills or native subagents).
-    "claude-code-fast": {
+    // native Claude Code extras such as skills or native subagents). An agent configured
+    // with an `acp/…` model counts as a Claude Code agent for the model pairing.
+    "claude-fast": {
       "description": "Fast Claude Code (Haiku, low effort)",
       "mode": "primary",
       "model": "acp/haiku#low"
     }
   }
   // Don't add agents through the plugin's `options.agents` just to get an extra one:
-  // that list REPLACES the built-in claude-code / claude-code-plan (see 05-custom-agents.jsonc).
+  // that list REPLACES the built-in claude-<mode> agents (see 05-custom-agents.jsonc).
 }

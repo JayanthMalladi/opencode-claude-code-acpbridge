@@ -41,7 +41,7 @@ with no OpenCode equivalent, and they go through the **permission bridge** (§4)
   (TUI/run)      │      • provider.transform:           • doStream(prompt, tools)        │
                  │      • registers the acp provider    • ACPOrchestratorModel           │
                  │      • agent.transform:              persistent ACP session           │
-                 │          claude-code + rules ──────► providerOptions.acp              │
+                 │          claude-<mode> + rules ────► providerOptions.acp              │
                  │      • session.hook("context"): ◄─── ocSession/ocAgent/resume*        │
                  │          session id + options ─────► + per-agent mode/effort          │
                  │      • event: session.revert.* → clearLink                            │
@@ -178,7 +178,7 @@ It forwards `tools/list`/`tools/call` over TCP to the host (port in `ACP_TOOL_HO
   `skillShell`, `allowedTools`. A raw override (`ctrl.tools`/`ctrl.settingSources`) **wins**
   over the composition.
 
-### `plugin/index.ts` · `bridge-rules.ts`
+### `plugin/index.ts` · `pairing.ts` · `bridge-rules.ts`
 - **`provider.transform`:**
   - discovers the models, with a 1 h cache;
   - builds `Model.Info[]` (`buildModelsInfo`);
@@ -187,28 +187,48 @@ It forwards `tools/list`/`tools/call` over TCP to the host (port in `ACP_TOOL_HO
   Without `command` (or `ACP_COMMAND`) it registers nothing, so you can declare the provider
   by hand. An `acp` provider that already exists is kept as it is.
 - **`agent.transform`:**
-  - **Injection.** Adds `claude-code`/`claude-code-plan`, or the plugin's `options.agents`,
-    which **replaces** that list; `agents: false` injects none. It only fills empty fields
+  - **Injection.** Adds one `claude-<mode>` agent per session mode discovery reported
+    (`modeAgentDefs` in `pairing.ts`; `default` first, `plan` with variant `high`, the six
+    known modes when discovery has none), or the plugin's `options.agents`, which **replaces**
+    that list; `agents: false` injects none. It only fills empty fields
     (`description`, `model`), so it stays idempotent across config reloads and respects your
     config.
   - **Rules it adds.** `{action:"question", resource:"*", effect:"allow"}` when the agent has
     the `question` tool, because the bridge's dialog runs through it. `compress: deny`, for
     the DCP plugin: rewriting OpenCode's copy of the history would only force cold replays.
   - **Publishing.** It **publishes** every agent's rules to the bridge (`publishAgentRules`),
-    not only its own: a subagent inherits its parent's model and may run on this provider.
+    not only its own: with `pairModels: false` a subagent inherits its parent's model and may
+    run on this provider.
+  - **Pairing state.** Records every agent's configured model and the set of injected agents
+    (`PairingState`), which the three pairing points below read.
 - **`session.hook("context")`**, also for the `compaction` and `generate` calls (only for the
   `acp` provider), injects per call:
   - `ocSession`/`ocAgent`/`requestKind`;
   - the registry's `resumeId`/`resumeLen`/`resumeLastUsage`/`resumeConvKey`/`resumeIdPrefixes`;
-  - the agent's Claude options (`mode`, native toggles…).
+  - the agent's Claude options (`mode`, native toggles…);
+  - `pairedAgent` (with pairing on): whether the agent is one of ours. The provider throws
+    `pairingError` (400, `x-should-retry: false`) on `false`, before touching the agent.
 
   V2 passes no provider options from config: everything the model needs comes through this
   hook.
 - **`session.hook("title")`:** names the session from the first user message with no model
   call (`titleFrom`), unless the `titleFromModel` option is set.
-- **`event.subscribe`:** `session.revert.committed|cleared` → `clearLink`, so a restart never
-  resumes a session that remembers undone turns. The live session handles the revert itself
-  (`smartRevert`, §4).
+- **`event.subscribe`:**
+  - `session.revert.committed|cleared` → `clearLink`, so a restart never resumes a session
+    that remembers undone turns. The live session handles the revert itself (`smartRevert`,
+    §4).
+  - `session.created|agent.selected|model.selected` → pairing watcher. The TUI commits a
+    turn's agent and model as two calls (`switchAgent`, then `switchModel`), so each session
+    is checked 150 ms after its last event; a pair still broken then is fixed with
+    `session.switchModel` (`pairTarget`). Fallback for a non-`claude-*` agent: its own
+    model, the session's last non-`acp` model, `model.default()`.
+- **`tool.hook("execute.before")` on `subagent`:** OpenCode resolves a child's model as
+  `input.model ?? agent.model ?? parent.model`. When that would land on `acp`, the hook sets
+  `input.model` to the default model; an explicit `acp/…` model, or no non-`acp` model at all,
+  fails the call with a `Tool.Error` (`subagentDecision`).
+- **Why after the fact:** V2's `Agent.Info` has no model list and the TUI's model picker
+  offers every model to every agent, and session hooks cannot fail a request — only
+  `tool execute.before` can.
 - **`bridge-rules.ts`** (shared by plugin and provider, like `sessions.ts`):
   - a per-agent rule store plus the persistent `~/.acp-model-provider/always.json`;
   - `evaluate()` mirrors V2's `Permission.evaluate` with **one deliberate difference**: it
@@ -232,7 +252,9 @@ It forwards `tools/list`/`tools/call` over TCP to the host (port in `ACP_TOOL_HO
 
 ### `provider/factory.ts` · `env.ts` · `history.ts` · `recorder.ts` · `bin/cli.ts` · `log.ts`
 - `factory.ts`: the provider factory. One shared `ACPOrchestratorModel`, plus an
-  `ACPModelView` per model id.
+  `ACPModelView` per model id. The orchestrator is shared across factory calls with the same
+  agent config (module-level map keyed by the resolved config): V2 builds one SDK instance per
+  distinct model `settings`, and each effort variant is such a setting.
 - `env.ts`: config from environment variables.
 - `recorder.ts`: the `ACP_RECORD` recorder (§5).
 - `bin/cli.ts`: the `sync` command (`npx opencode-claude-code-acpbridge sync claude-agent-acp`).
@@ -383,13 +405,13 @@ broken several times (0.8.0, 9299af9).
 absolute directory path):
 
 ```bash
-cd <project> && ACP_DEBUG=1 opencode run --standalone --agent claude-code -m acp/default "reply only: ok"
+cd <project> && ACP_DEBUG=1 opencode run --standalone --agent claude-default -m acp/default "reply only: ok"
 ```
 
 Check the log, in this order:
 1. `loading plugin`;
 2. `[acp-plugin] auto-registered provider 'acp' … models: …`;
-3. `agents registered: claude-code, claude-code-plan`;
+3. `agents registered: claude-default, claude-auto, claude-acceptedits, claude-plan, …`;
 4. `[acp-orchestrator] connected to agent`.
 
 Notes:
@@ -433,7 +455,8 @@ building config, `setSessionMode`) spend no tokens.
 
 ## 6. Extending
 
-- **New built-in agents:** edit `agentDefs()` in `plugin/index.ts`.
+- **New built-in agents:** they come from the discovered modes (`modeAgentDefs()` in
+  `plugin/pairing.ts`, called by `agentDefs()` in `plugin/index.ts`).
   - Each entry is `{ name, description, model, variant, options }`.
   - Users replace the whole list with a plain-object `plugins[].options.agents` (no merge
     with the built-in profile), or turn it off with `agents: false`.

@@ -45,7 +45,7 @@ test("KEEP: switching agent (different system, ocAgent) keeps the session", asyn
   try {
     const t1 = await first(agent, model, [SYS, user("hola")], { session: "ses_k2" });
     await reply(agent, t1.sid, t1.r, "R1");
-    const r2 = run(model, opts([sys("You are the plan agent."), user("hola"), asst("R1"), user("dos")], { session: "ses_k2", agent: "claude-code-plan" }));
+    const r2 = run(model, opts([sys("You are the plan agent."), user("hola"), asst("R1"), user("dos")], { session: "ses_k2", agent: "claude-plan" }));
     const p2 = await agent.next("prompt");
     assert.equal(p2.sessionId, t1.sid);
     await reply(agent, t1.sid, r2, "R2");
@@ -191,7 +191,7 @@ test("KEEP: turns run by another model in between reach the agent on return", as
 test("KEEP: a plan exit made by the agent sticks; reselecting plan re-applies it", async () => {
   const { agent, model, done } = setup();
   try {
-    const plan = { session: "ses_k11", agent: "claude-code-plan", extra: { mode: "plan" } };
+    const plan = { session: "ses_k11", agent: "claude-plan", extra: { mode: "plan" } };
     const t1 = await first(agent, model, [SYS, user("planea")], plan);
     await agent.next("setMode", (e) => e.modeId === "plan");
     await agent.modeUpdate(t1.sid, "default"); // ExitPlanMode approved
@@ -201,7 +201,7 @@ test("KEEP: a plan exit made by the agent sticks; reselecting plan re-applies it
     await agent.next("prompt");
     assert.equal(await agent.none("setMode"), null);
     await reply(agent, t1.sid, r2, "hecho");
-    const r3 = run(model, opts([...h2, asst("hecho"), user("otro")], { ...plan, agent: "claude-code", extra: { mode: "default" } }));
+    const r3 = run(model, opts([...h2, asst("hecho"), user("otro")], { ...plan, agent: "claude-default", extra: { mode: "default" } }));
     await agent.next("prompt");
     await reply(agent, t1.sid, r3, "ok");
     const r4 = run(model, opts([...h2, asst("hecho"), user("otro"), asst("ok"), user("planea más")], plan));
@@ -634,7 +634,7 @@ test("#21: switching to an agent with another native profile forks the session (
 test("#22: ExitPlanMode offers the agent's own choices; the picked one is honoured", async () => {
   const { agent, model, done } = setup();
   try {
-    const plan = { session: "ses_g3", agent: "claude-code-plan", extra: { mode: "plan" } };
+    const plan = { session: "ses_g3", agent: "claude-plan", extra: { mode: "plan" } };
     const hist = [SYS, user("planea")];
     const t1 = await first(agent, model, hist, plan);
     const perm = agent.requestPermission(t1.sid, { toolCallId: "tu_x", kind: "switch_mode", title: "Ready to code?", rawInput: { plan: "1. hacer A\n2. hacer B" } }, PLAN_OPTIONS);
@@ -653,7 +653,7 @@ test("#22: ExitPlanMode offers the agent's own choices; the picked one is honour
 test("#22: a typed answer keeps planning and reaches the agent as feedback", async () => {
   const { agent, model, done } = setup();
   try {
-    const plan = { session: "ses_g4", agent: "claude-code-plan", extra: { mode: "plan" } };
+    const plan = { session: "ses_g4", agent: "claude-plan", extra: { mode: "plan" } };
     const hist = [SYS, user("planea")];
     const t1 = await first(agent, model, hist, plan);
     const perm = agent.requestPermission(t1.sid, { toolCallId: "tu_y", kind: "switch_mode", title: "Ready?", rawInput: { plan: "plan v1" } }, PLAN_OPTIONS);
@@ -670,11 +670,11 @@ test("#22: a typed answer keeps planning and reaches the agent as feedback", asy
 test("#23: leaving the plan agent after approving with acceptEdits keeps acceptEdits", async () => {
   const { agent, model, done } = setup();
   try {
-    const plan = { session: "ses_g5", agent: "claude-code-plan", extra: { mode: "plan" } };
+    const plan = { session: "ses_g5", agent: "claude-plan", extra: { mode: "plan" } };
     const t1 = await first(agent, model, [SYS, user("planea")], plan);
     await agent.modeUpdate(t1.sid, "acceptEdits"); // ExitPlanMode approved with acceptEdits
     await reply(agent, t1.sid, t1.r, "aprobado");
-    const r2 = run(model, opts([SYS, user("planea"), asst("aprobado"), user("sigue")], { session: "ses_g5", agent: "claude-code", extra: { mode: "default" } }));
+    const r2 = run(model, opts([SYS, user("planea"), asst("aprobado"), user("sigue")], { session: "ses_g5", agent: "claude-default", extra: { mode: "default" } }));
     await agent.next("prompt", (e) => /sigue/.test(e.text));
     assert.equal(agent.log.filter((e) => e.type === "setMode" && e.modeId === "default").length, 0);
     await reply(agent, t1.sid, r2, "ok");
@@ -684,7 +684,7 @@ test("#23: leaving the plan agent after approving with acceptEdits keeps acceptE
 test("2c: a usage-limit failure becomes a clear, non-retryable error", async () => {
   const { limitError } = await import("../dist/provider/model.js");
   const e = limitError(new Error("Claude AI usage limit reached|1792700000"));
-  assert.match(e.message, /usage limit reached.*Switch to another model/);
+  assert.match(e.message, /usage limit reached.*Switch to another agent/);
   // OpenCode >= 2.1 retries unclassified errors; 402 + x-should-retry:false → QuotaExceeded, no retry.
   const { APICallError } = await import("@ai-sdk/provider");
   assert.ok(APICallError.isInstance(e));

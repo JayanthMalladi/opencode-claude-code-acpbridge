@@ -6,6 +6,7 @@ import { loadAnthropicCatalog, buildModelsInfo } from "./catalog.js";
 import { readCacheKeyed, writeCache } from "./cache.js";
 import { getLink, clearLink } from "./sessions.js";
 import { publishAgentRules } from "./bridge-rules.js";
+import { FALLBACK_MODES, modeAgentDefs, pairTarget, subagentDecision, isProviderModel, refString, type ModelRef, type PairingState } from "./pairing.js";
 import { detectClaudeExecutable } from "../provider/factory.js";
 
 import { logger } from "../log.js";
@@ -63,7 +64,7 @@ function resolveNpmSpec(override?: string): string {
 
 /** Strip plugin-only keys; the rest are the provider/agent options passed to the factory. */
 function providerOptions(opts: Record<string, any>): Record<string, any> {
-  const { name: _n, npm: _npm, providerId: _p, models: _m, agents: _a, agentModel: _am, ...rest } = opts;
+  const { name: _n, npm: _npm, providerId: _p, models: _m, agents: _a, agentModel: _am, pairModels: _pm, ...rest } = opts;
   return rest;
 }
 
@@ -73,7 +74,7 @@ function providerOptions(opts: Record<string, any>): Record<string, any> {
  *  loaded through `settingSources: user`) and OpenCode's `subagent` tool, whose child
  *  sessions stay visible and continuable by ANY model — the preferred one for real work,
  *  since the user switches between this provider and others mid-session (descriptions
- *  steer the agent). IDENTICAL for both agents on purpose: they differ ONLY in the initial
+ *  steer the agent). IDENTICAL for every agent on purpose: they differ ONLY in the initial
  *  session mode, so a plan session can never end up half-restricted. */
 const NATIVE_BASE: Record<string, any> = {
   allowedTools: ["mcp__opencode"], // OpenCode's tools don't double-prompt (it owns them)
@@ -91,29 +92,16 @@ const NATIVE_BASE: Record<string, any> = {
   nativeSkills: true,      // ~/.claude/skills, hooks disabled (verified: keeps subscription)
 };
 
-/** Agent profiles: Claude session mode (the only difference between the two) + Claude
- *  native options. V2's `Agent.Info` has no `options` field, so these travel to the
- *  provider per call through the `context` hook (merged with `options.agents.<name>.options`). */
-function agentDefs(opts: Record<string, any>): Record<string, any> {
+/** Agent profiles: one per Claude Code session mode the agent reports (`claude-default`,
+ *  `claude-plan`, …; the mode is the only difference) + Claude native options. V2's
+ *  `Agent.Info` has no `options` field, so these travel to the provider per call through
+ *  the `context` hook (merged with `options.agents.<name>.options`). */
+export function agentDefs(opts: Record<string, any>, modes: ReadonlyArray<{ id: string; name?: string }> = FALLBACK_MODES): Record<string, any> {
   if (opts.agents && opts.agents !== true && isPlainObject(opts.agents)) return opts.agents;
   if (opts.agents && opts.agents !== true && !isPlainObject(opts.agents)) {
     dbg("invalid agents config — using defaults");
   }
-  return {
-    "claude-code": {
-      name: "Claude Code",
-      description: "Claude Code (subscription) — native capabilities with permissions bridged to OpenCode",
-      model: opts.agentModel ?? "default",
-      options: { mode: "default", ...NATIVE_BASE },
-    },
-    "claude-code-plan": {
-      name: "Claude Code (plan)",
-      description: "Claude Code — plan mode (research & plan, no destructive edits)",
-      model: opts.agentModel ?? "default",
-      variant: "high",
-      options: { mode: "plan", ...NATIVE_BASE },
-    },
-  };
+  return modeAgentDefs(modes, opts.agentModel ?? "default", NATIVE_BASE);
 }
 
 /** `Model.Ref` for an agent: `"default"` → `<provider>/default`, a full ref passes through. */
@@ -132,9 +120,10 @@ function modelRef(value: any, providerID: string, variant?: string) {
  *                 "options": { "command": "claude-agent-acp" } }]
  *
  * It discovers the agent's models (cached), pulls their metadata from models.dev,
- * registers the `acp` provider with the populated `Model.Info[]`, injects the
- * `claude-code` / `claude-code-plan` agents, and bridges every per-request value
- * (session link, agent options) through the `context` hook.
+ * registers the `acp` provider with the populated `Model.Info[]`, injects one
+ * `claude-<mode>` agent per Claude Code session mode, pairs the provider's models
+ * with those agents, and bridges every per-request value (session link, agent
+ * options) through the `context` hook.
  */
 /** ¿Está la tool `question` en el set de tools del agente? Soporta array / Set /
  *  Record (según cómo OpenCode lo haya convertido); sin info se asume que sí
@@ -174,6 +163,10 @@ export const ACPPlugin = Plugin.define({
     const opts = (ctx.options ?? {}) as Record<string, any>;
     const providerId: string = opts.providerId ?? "acp";
     const agentOptions = new Map<string, Record<string, any>>();
+    // Model ↔ agent pairing (see pairing.ts). Off with `pairModels: false`, and inert
+    // until our agents are registered (a manually declared provider has none).
+    const pairing: PairingState = { providerID: providerId, agentModels: new Map(), acpAgents: new Set() };
+    const pairingOn = () => opts.pairModels !== false && pairing.acpAgents.size > 0;
 
     if (!opts.command && !process.env.ACP_COMMAND) {
       dbg("no `command` in plugin options — skipping auto-register (declare the provider manually)");
@@ -234,7 +227,7 @@ export const ACPPlugin = Plugin.define({
         dbg(`auto-registered provider '${providerId}' (aisdk:${npmSpec}) — models: ${models.map((m) => m.id).join(", ")}`);
 
         if (opts.agents !== false) {
-          const defs = agentDefs(opts);
+          const defs = agentDefs(opts, discovered?.modes ?? []);
           await ctx.agent.transform((editor) => {
             for (const [name, raw] of Object.entries(defs)) {
               const def = raw as any;
@@ -279,9 +272,17 @@ export const ACPPlugin = Plugin.define({
             }
             // Any agent can run on this provider (a subagent inherits its parent's
             // model), so the bridge needs every agent's rules — not just ours.
+            const agentModels = new Map<string, ModelRef | undefined>();
             for (const item of editor.list()) {
               if (!(String(item.id) in defs)) publishAgentRules(String(item.id), item.permissions);
+              agentModels.set(String(item.id), item.model ? { ...item.model, providerID: String(item.model.providerID), id: String(item.model.id) } as ModelRef : undefined);
             }
+            pairing.agentModels = agentModels;
+            // Ours, plus any agent the user configured with one of the provider's models.
+            pairing.acpAgents = new Set([
+              ...Object.keys(defs),
+              ...[...agentModels].filter(([, m]) => isProviderModel(m, providerId)).map(([id]) => id),
+            ]);
           });
           dbg(`agents registered: ${Object.keys(defs).join(", ")}`);
         }
@@ -306,6 +307,8 @@ export const ACPPlugin = Plugin.define({
         event.options.requestKind = kind;
         // Whether the agent can ask the user: the permission bridge needs `question`.
         event.options.hasQuestion = !!event.tools && "question" in event.tools;
+        // Only the Claude Code agents may use this provider: the provider refuses the rest.
+        if (pairingOn()) event.options.pairedAgent = pairing.acpAgents.has(String(event.agent));
         const link = getLink(event.sessionID);
         if (link?.acpSessionId) {
           event.options.resumeId = link.acpSessionId;
@@ -343,12 +346,66 @@ export const ACPPlugin = Plugin.define({
     // the prompt itself (history fingerprint), so programmatic use without the
     // plugin stays correct.
     const closed = new AbortController();
+
+    // Pairing watcher. The TUI commits a turn's agent and model as two separate calls
+    // (switchAgent, then switchModel), so a session is checked once both have landed —
+    // a short per-session debounce — and only a pair still broken then is fixed.
+    const lastOther = new Map<string, ModelRef>(); // last non-acp model seen per session
+    const pending = new Map<string, NodeJS.Timeout>();
+    const remember = (sessionID: string, model: any) => {
+      if (model?.providerID && !isProviderModel(model, providerId))
+        lastOther.set(sessionID, { providerID: String(model.providerID), id: String(model.id), ...(model.variant ? { variant: String(model.variant) } : {}) });
+    };
+    const defaultModel = async (): Promise<ModelRef | undefined> => {
+      try {
+        const m = (await ctx.model.default())?.data;
+        return m ? { providerID: String(m.providerID), id: String(m.id) } : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    const checkPair = async (sessionID: string) => {
+      if (closed.signal.aborted || !pairingOn()) return;
+      try {
+        const session = await ctx.session.get({ sessionID: sessionID as any });
+        const current = session?.model ? { ...session.model, providerID: String(session.model.providerID), id: String(session.model.id) } as ModelRef : undefined;
+        remember(sessionID, current);
+        const fallback = lastOther.get(sessionID) ?? (await defaultModel());
+        const target = pairTarget(pairing, { agent: session?.agent ? String(session.agent) : undefined, model: current }, fallback);
+        if (!target) {
+          if (current && session?.agent && isProviderModel(current, providerId) && !pairing.acpAgents.has(String(session.agent)))
+            log.note(`pairing: session ${sessionID} (agent ${session.agent}) is on ${refString(current)} and no non-acp model is known — set a default \`model\` in OpenCode`);
+          return;
+        }
+        dbg(`pairing: session ${sessionID} agent ${session?.agent} on ${current ? refString(current) : "?"} → ${refString(target)}`);
+        await ctx.session.switchModel({ sessionID: sessionID as any, model: Model.Ref.parse(refString(target)) });
+      } catch (e) {
+        dbg(`pairing check failed for ${sessionID}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+    const schedulePair = (sessionID: string) => {
+      clearTimeout(pending.get(sessionID));
+      pending.set(sessionID, setTimeout(() => {
+        pending.delete(sessionID);
+        void checkPair(sessionID);
+      }, 150));
+    };
+
     const events = (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: closed.signal })) {
+          const data = (event as { data?: Record<string, any> }).data;
+          const sessionID: string | undefined = data?.sessionID;
+          if (!sessionID) continue;
+          if (event.type === "session.created" || event.type === "session.agent.selected" || event.type === "session.model.selected") {
+            if (!pairingOn()) continue;
+            remember(sessionID, data?.previous && event.type === "session.model.selected" ? data.previous : undefined);
+            remember(sessionID, data?.model);
+            schedulePair(sessionID);
+            continue;
+          }
           if (event.type !== "session.revert.committed" && event.type !== "session.revert.cleared") continue;
-          const sessionID = (event as { data?: { sessionID?: string } }).data?.sessionID;
-          if (sessionID && clearLink(sessionID)) {
+          if (clearLink(sessionID)) {
             dbg(`session ${sessionID} rewound — link dropped, next turn starts fresh`);
           }
         }
@@ -357,8 +414,31 @@ export const ACPPlugin = Plugin.define({
       }
     })();
 
+    // OpenCode subagents never run on this provider: a child would inherit its Claude
+    // Code parent's model, so it gets its own configured model or the default one.
+    const subagent = await ctx.tool.hook("execute.before", async (event) => {
+      if (event.tool !== "subagent" || !pairingOn() || !isPlainObject(event.input)) return;
+      const input = event.input as Record<string, any>;
+      let parentModel: ModelRef | undefined;
+      try {
+        const parent = await ctx.session.get({ sessionID: event.sessionID });
+        if (parent?.model) parentModel = { providerID: String(parent.model.providerID), id: String(parent.model.id) };
+      } catch { /* unknown parent: judged on the agent's own model */ }
+      const decision = subagentDecision(pairing, input, parentModel, await defaultModel());
+      if (!decision) return;
+      if (decision.kind === "reject")
+        throw new Error(`The model ${decision.model} is reserved for the Claude Code agents (claude-*); subagent "${input.agent}" cannot use it. Omit \`model\` or pass a model of another provider.`);
+      if (decision.kind === "missing")
+        throw new Error(`Subagent "${input.agent}" would inherit a Claude Code (${providerId}) model, which is reserved for the claude-* agents. Give that agent a model in OpenCode's config, set a default \`model\`, or pass \`model\` explicitly.`);
+      dbg(`pairing: subagent ${input.agent} from ${event.sessionID} → ${decision.model}`);
+      event.input = { ...input, model: decision.model };
+    });
+
     return async () => {
       closed.abort();
+      for (const timer of pending.values()) clearTimeout(timer);
+      pending.clear();
+      await subagent.dispose();
       await context.dispose();
       await compaction.dispose();
       await generate.dispose();

@@ -104,7 +104,11 @@ export function createFakeAgent(opts = {}) {
     },
     async newSession(params) {
       const s = await openSession(`s${++seq}`, params, "newSession");
-      return { sessionId: s.id, models: { currentModelId: "fake", availableModels: [] } };
+      return {
+        sessionId: s.id,
+        models: { currentModelId: "fake", availableModels: [] },
+        ...(opts.effort ? { configOptions: [{ id: "effort", type: "select", currentValue: opts.effort, options: [] }] } : {}),
+      };
     },
     async unstable_resumeSession(params) {
       if (opts.resumeFails) throw new Error("resume not possible");

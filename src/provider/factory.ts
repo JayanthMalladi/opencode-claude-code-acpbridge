@@ -116,6 +116,9 @@ export function detectClaudeExecutable(): string | undefined {
   }
 }
 
+/** Orchestrators by agent config (see `createACPModelProvider`). */
+const orchestrators = new Map<string, ACPOrchestratorModel>();
+
 function resolveOrchestratorConfig(opts: ACPModelProviderOptions): Omit<ACPModelConfig, "modelId"> {
   const command = opts.command ?? process.env.ACP_COMMAND;
   if (!command) throw new ACPConfigurationError(["ACP_COMMAND (or options.command)"]);
@@ -167,7 +170,14 @@ export function createACPModelProvider(
   const providerName = options.name ?? "acp-model";
   // ONE orchestrator — one agent process, one session map — for every model of the
   // provider; each model is a view that applies its model per session (set_model).
-  const core = new ACPOrchestratorModel({ ...base, modelId: "claude-code" });
+  // Shared across provider instances built from the same agent config: OpenCode V2
+  // builds a new SDK instance per distinct model `settings`, and the effort variants are
+  // settings (`{ effort }`). Without sharing, each effort level got its own agent process,
+  // which resumed the same Claude session apart from the others. Effort travels per call
+  // (`providerOptions.acp.effort`) and is applied live (`setSessionConfigOption`).
+  const key = JSON.stringify(base);
+  const core = orchestrators.get(key) ?? new ACPOrchestratorModel({ ...base, modelId: "claude-code" });
+  orchestrators.set(key, core);
   const models = new Map<string, LanguageModelV3>();
 
   const get = (modelId?: string): LanguageModelV3 => {

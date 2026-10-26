@@ -3,7 +3,7 @@
 //
 // session-mixed.jsonl — one OpenCode session, acp/haiku + opencode-go/beam-free:
 //   tool loop, reuse, failed foreign turns, foreign turn with a tool, agent switch to
-//   claude-code-plan with a bridged permission, a steered message, an interrupt + new
+//   claude-code-plan (pre-0.11 name of claude-plan) with a bridged permission, a steered message, an interrupt + new
 //   message, an OpenCode compaction and the first post-compaction turn.
 // aux-title-compaction.jsonl — the title and compaction calls of that session.
 import { test } from "node:test";

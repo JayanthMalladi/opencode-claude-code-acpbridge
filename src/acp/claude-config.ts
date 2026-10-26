@@ -97,7 +97,7 @@ export interface ClaudeCodeControl {
    * ACP session mode, applied at runtime via `setSessionMode` (e.g. `"plan"`,
    * `"bypassPermissions"`). Unlike `permissionMode` (which the ACP agent ignores
    * for the session mode), this actually switches the mode. Can be set per-call
-   * through `providerOptions.acp.mode` (e.g. a `claude-code-plan` agent).
+   * through `providerOptions.acp.mode` (e.g. the `claude-plan` agent).
    */
   mode?: ClaudePermissionMode;
 

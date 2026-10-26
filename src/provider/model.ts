@@ -155,6 +155,9 @@ interface TurnState {
   /** Runtime config already applied via setSessionMode/setSessionConfigOption (no reset needed). */
   appliedMode?: string;
   appliedEffort?: string;
+  /** The session's own effort before any variant changed it (`configOptions.effort`):
+   *  restored when the user goes back to the model without a variant. */
+  defaultEffort?: string;
   /** Model last applied with session/set_model: switching opus ↔ sonnet keeps the
    *  session (and its transcript) instead of spawning another agent. */
   appliedModel?: string;
@@ -177,7 +180,7 @@ interface TurnState {
   isChild?: boolean;
   /** The OpenCode agent of this turn has the `question` tool (unknown → assume yes). */
   hasQuestion?: boolean;
-  /** OpenCode agent driving this turn (`claude-code`, `claude-code-plan`, …), for logs
+  /** OpenCode agent driving this turn (`claude-default`, `claude-plan`, …), for logs
    *  and for the notice shown when the agent leaves plan mode on its own. */
   ocAgent?: string;
   /** One key per NON-SYSTEM message the ACP agent has already been told about.
@@ -361,7 +364,7 @@ export function limitError(err: unknown): APICallError | undefined {
   // QuotaExceeded and fails at once, so the user can switch models right away.
   // (APICallError.isInstance matches by a global symbol, so the host's AI SDK copy accepts it.)
   return new APICallError({
-    message: `Claude Code: usage limit reached${when ? ` (resets: ${when})` : ""}. Switch to another model in OpenCode to continue; the Claude Code session is kept for when you come back.`,
+    message: `Claude Code: usage limit reached${when ? ` (resets: ${when})` : ""}. Switch to another agent in OpenCode (not claude-*) to continue with its model; the Claude Code session is kept for when you come back.`,
     url: "acp://claude-code",
     requestBodyValues: {},
     statusCode: 402,
@@ -369,6 +372,27 @@ export function limitError(err: unknown): APICallError | undefined {
     isRetryable: false,
     cause: err,
   });
+}
+
+/** A request from an agent other than the Claude Code ones: the plugin pairs this
+ *  provider's models with its `claude-*` agents (see plugin/pairing.ts) and flags the
+ *  call with `pairedAgent: false`. A 400 with `x-should-retry: false`, so OpenCode
+ *  fails the turn at once with the message instead of retrying it. */
+export function pairingError(agent: unknown, modelId: string): APICallError {
+  return new APICallError({
+    message: `Claude Code: the model ${modelId} is reserved for the Claude Code agents (claude-*), and agent "${String(agent ?? "?")}" cannot use it. Switch to a claude-* agent, or pick another model for this agent.`,
+    url: "acp://claude-code",
+    requestBodyValues: {},
+    statusCode: 400,
+    responseHeaders: { "x-should-retry": "false" },
+    isRetryable: false,
+  });
+}
+
+/** Current value of the session's `effort` config option, as new/resume report it. */
+function effortOption(res: any): string | undefined {
+  const opt = (res?.configOptions ?? []).find((o: any) => o?.id === "effort");
+  return typeof opt?.currentValue === "string" ? opt.currentValue : undefined;
 }
 
 /** Total text size of a prompt (diagnostics). */
@@ -417,8 +441,9 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     modelId?: string,
   ): Promise<{ stream: ReadableStream<LanguageModelV3StreamPart>; warnings: never[] }> {
     if (modelId) this.callModel.set(options, modelId);
+    const po = this.providerOptions(options);
+    if (po.pairedAgent === false) throw pairingError(po.ocAgent, this.callModel.get(options) ?? this.modelId);
     if (recording()) {
-      const po = this.providerOptions(options);
       record(this.convId(options), {
         kind: "call",
         modelId: this.callModel.get(options) ?? this.modelId,
@@ -722,13 +747,14 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
     const resumePrefixes: string[] = Array.isArray(po.resumeIdPrefixes) ? po.resumeIdPrefixes.map(String) : [];
     let sessionId: string | undefined;
     let replayFull = true;
+    let defaultEffort: string | undefined;
     // A registry entry for a DIFFERENT conversation (first message changed: compaction,
     // or a reused id) must not be resumed — the agent would carry the wrong context.
     const sameConv = !po.resumeConvKey || po.resumeConvKey === convKey;
     if (!sameConv) dbg(`resumeConvKey mismatch (registry=${po.resumeConvKey} current=${convKey}) — not resuming`);
     if (resumeId && sameConv && resumeLen > 0 && hist.length > resumeLen) {
       try {
-        await this.connection.unstable_resumeSession({
+        const resumed = await this.connection.unstable_resumeSession({
           sessionId: resumeId,
           cwd: this.config.cwd ?? process.cwd(),
           mcpServers: [serverConfig],
@@ -740,6 +766,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         } as any);
         sessionId = resumeId;
         replayFull = false;
+        defaultEffort = effortOption(resumed);
         dbg(`resume ${resumeId} (oc=${ocSession ?? "?"}) — no history replay`);
       } catch (e) {
         dbg(`resume ${resumeId} failed (${e instanceof Error ? e.message : String(e)}) — fresh session`);
@@ -756,6 +783,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         _meta: meta,
       });
       sessionId = session.sessionId;
+      defaultEffort = effortOption(session);
       dbg(`model=${session.models?.currentModelId ?? "?"} (requested: ${ctrl.model ?? "default"}, mode: ${ctrl.mode ?? "default"}, effort: ${ctrl.effort ?? "default"}) — tools(${tools.length})`);
     }
 
@@ -777,6 +805,7 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
       ocAgent: po.ocAgent ? String(po.ocAgent) : undefined,
       hasQuestion: typeof po.hasQuestion === "boolean" ? po.hasQuestion : undefined,
       isChild: isChildCall(options),
+      defaultEffort,
       // Resume path: carry the persisted snapshot over so the registry keeps a
       // value even if the resumed session never completes another turn.
       lastUsage: replayFull ? undefined : po.resumeLastUsage,
@@ -1658,15 +1687,18 @@ export class ACPOrchestratorModel implements LanguageModelV3 {
         dbg(`mode → ${ctrl.mode}`);
       } catch (e) { dbg(`setSessionMode(${ctrl.mode}) failed: ${e instanceof Error ? e.message : String(e)}`); }
     }
-    if (ctrl.effort && ctrl.effort !== t.appliedEffort) {
+    // Every effort variant shares this session, so the model WITHOUT a variant means the
+    // session's own effort again, not whatever variant was picked last.
+    const effort = ctrl.effort ?? (t.appliedEffort !== undefined ? t.defaultEffort : undefined);
+    if (effort && effort !== t.appliedEffort) {
       try {
-        await this.connection.setSessionConfigOption({ sessionId: t.sessionId, configId: "effort", value: ctrl.effort });
-        t.appliedEffort = ctrl.effort;
-        dbg(`effort → ${ctrl.effort}`);
+        await this.connection.setSessionConfigOption({ sessionId: t.sessionId, configId: "effort", value: effort });
+        t.appliedEffort = effort;
+        dbg(`effort → ${effort}`);
       } catch (e) {
         // Not a debug detail: a rejected effort means the user picked `:max` and is
         // silently getting something else — including no visible reasoning.
-        note(`warning: could not apply effort=${ctrl.effort} (${e instanceof Error ? e.message : String(e)})`);
+        note(`warning: could not apply effort=${effort} (${e instanceof Error ? e.message : String(e)})`);
       }
     }
   }

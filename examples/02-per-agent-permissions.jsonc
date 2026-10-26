@@ -15,7 +15,7 @@
     { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ],
   "agents": {
-    "claude-code": {
+    "claude-default": {
       // A strict read-only agent: no edits and no shell; reading, searching and web are fine.
       "permissions": [
         { "action": "edit",     "resource": "*", "effect": "deny" },
@@ -26,7 +26,7 @@
         { "action": "webfetch", "resource": "*", "effect": "allow" }
       ]
     },
-    "claude-code-plan": {
+    "claude-plan": {
       // The planning agent: never edit, and ask before running any shell command.
       "permissions": [
         { "action": "edit",  "resource": "*", "effect": "deny" },

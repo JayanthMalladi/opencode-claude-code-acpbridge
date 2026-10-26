@@ -41,7 +41,7 @@ export const TOOLS = [
 ];
 
 /** doStream options as OpenCode V2 sends them for a primary call. */
-export function opts(prompt, { session = "ses_test", agent = "claude-code", tools = TOOLS, extra = {} } = {}) {
+export function opts(prompt, { session = "ses_test", agent = "claude-default", tools = TOOLS, extra = {} } = {}) {
   return { prompt, tools, providerOptions: { acp: { ocSession: session, ocAgent: agent, ...extra } } };
 }
 

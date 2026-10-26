@@ -6,7 +6,7 @@
     { "package": "opencode-claude-code-acpbridge",
       "options": {
         "command": "claude-agent-acp",
-        // This list REPLACES the built-in agents (claude-code / claude-code-plan).
+        // This list REPLACES the built-in agents (claude-default, claude-plan, …).
         // Your agents get exactly the `options` you write here: they do NOT inherit the
         // built-in native profile (native subagents, skills, project memory…). Add those
         // options yourself if you want them, e.g. "nativeSkills": true.

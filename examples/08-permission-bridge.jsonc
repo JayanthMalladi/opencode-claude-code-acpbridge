@@ -1,7 +1,7 @@
 {
   // Permission bridge (OpenCode V2 only).
   //
-  // The built-in `claude-code` agents keep a few NATIVE Claude Code tools that
+  // The built-in `claude-*` agents keep a few NATIVE Claude Code tools that
   // OpenCode has no equivalent for: Skill, NotebookEdit, WebSearch, native subagents
   // (Task), MCP resource search, and ExitPlanMode. When Claude wants to use one of
   // them, Claude Code asks for permission, and the plugin answers like this:
@@ -23,7 +23,7 @@
     { "package": "opencode-claude-code-acpbridge", "options": { "command": "claude-agent-acp" } }
   ],
   "agents": {
-    "claude-code": {
+    "claude-default": {
       "permissions": [
         { "action": "Skill",        "resource": "*", "effect": "allow" },  // any skill: allow
         { "action": "WebSearch",    "resource": "*", "effect": "allow" },  // native web search: allow
