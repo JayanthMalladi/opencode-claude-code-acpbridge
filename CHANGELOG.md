@@ -6,6 +6,40 @@ All notable changes to `opencode-claude-code-acpbridge`. The format is based on
 > **OpenCode V2 only since 0.9.0.** Versions 0.9.0 and later load only in OpenCode V2. If you
 > are still on OpenCode V1, stay on 0.8.x. See [MIGRATION_V2.md](MIGRATION_V2.md).
 
+## [0.11.0] — 2026-10-26
+
+### Changed — breaking
+
+- **One agent per Claude Code mode.** The plugin injects a `claude-<mode>` agent for every
+  session mode the agent reports: `claude-default`, `claude-plan`, `claude-acceptedits`,
+  `claude-auto`, `claude-dontask`, `claude-bypasspermissions` (the six known modes when
+  discovery has none). They replace `claude-code` and `claude-code-plan`, with no aliases:
+  rename those agents in your `agents` section (`claude-code` → `claude-default`,
+  `claude-code-plan` → `claude-plan`). The mode only governs Claude's native tools; OpenCode's
+  tools keep the agent's OpenCode permissions. Effort stays a model variant; `claude-plan`
+  keeps `high`.
+- **The `acp` models are paired with the Claude Code agents** (`pairModels`, default `true`).
+  OpenCode V2 offers every model to every agent, so the plugin enforces it:
+  - selecting an agent or model that breaks the pair moves the session back to a valid model
+    (the agent's own, the session's last non-`acp` model, or OpenCode's default `model`);
+  - an `acp` request from any other agent fails at once (HTTP 400, `x-should-retry: false`);
+  - OpenCode subagents launched from a `claude-*` agent get their own model or the default one
+    instead of inheriting `acp`.
+
+  Agents you declare with an `acp/…` model count as Claude Code agents. `pairModels: false`
+  restores the old behaviour.
+- The usage-limit error now says to switch agent rather than model.
+
+### Fixed
+
+- **Each effort variant started its own agent process.** OpenCode V2 builds a new SDK instance
+  for every distinct model `settings`, and the effort variants are settings, so `#high`,
+  `#low` and the plain model each spawned a `claude-agent-acp` that resumed the same Claude
+  session apart from the others (cache partly cold; going back to a variant found a process
+  that had missed the turns in between). Provider instances built from the same agent config
+  now share one orchestrator: effort switches live with `setSessionConfigOption`, and the
+  model without a variant restores the session's own effort.
+
 ## [0.10.1] — 2026-10-23
 
 ### Fixed
