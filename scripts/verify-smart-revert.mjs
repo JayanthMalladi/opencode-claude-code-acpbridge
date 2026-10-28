@@ -20,7 +20,7 @@ const OC = "verify-smart-revert-" + Date.now();
 
 async function run(label, messages) {
   let out = "";
-  for await (const p of streamText({ model, messages, providerOptions: { acp: { ocSession: OC } } }).fullStream) {
+  for await (const p of streamText({ model, messages, providerOptions: { acp: { ocSession: OC } } }).stream) {
     if (p.type === "text-delta") out += p.delta ?? p.text ?? "";
     else if (p.type === "error") throw p.error;
   }

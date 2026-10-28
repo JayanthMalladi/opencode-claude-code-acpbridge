@@ -16,7 +16,7 @@ const acp = { acp: { ocSession: OC_SESSION } };
 
 async function run(label, messages) {
   let out = "", err = null;
-  for await (const p of streamText({ model, messages, providerOptions: acp }).fullStream) {
+  for await (const p of streamText({ model, messages, providerOptions: acp, allowSystemInMessages: true }).stream) {
     if (p.type === "text-delta") out += (p.delta ?? p.text ?? "");
     else if (p.type === "error") { err = p.error; break; }
   }

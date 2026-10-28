@@ -4,7 +4,7 @@
 // `execute` simula el veredicto de OpenCode (approved / reject). Verificamos que el
 // agente SOLO crea el archivo cuando se aprueba.
 import { createACPModelProvider } from "../dist/index.js";
-import { streamText, tool, stepCountIs } from "ai";
+import { streamText, tool, isStepCount } from "ai";
 import { z } from "zod";
 import { existsSync, rmSync, readFileSync } from "node:fs";
 
@@ -21,7 +21,7 @@ async function run(label, verdict) {
 
   const res = streamText({
     model,
-    stopWhen: stepCountIs(6),
+    stopWhen: isStepCount(6),
     tools: {
       claude_permission: tool({
         description: "Permission bridge meta-tool",
@@ -41,7 +41,7 @@ async function run(label, verdict) {
   });
 
   let text = "";
-  for await (const p of res.fullStream) {
+  for await (const p of res.stream) {
     if (p.type === "text-delta") text += (p.delta ?? p.text ?? "");
     else if (p.type === "tool-call") console.log(`  [${label}] tool-call →`, p.toolName);
     else if (p.type === "error") console.log(`  [${label}] error:`, String(p.error).slice(0, 120));

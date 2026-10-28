@@ -48,7 +48,7 @@ const res = streamText({
     "Al final escribe un parrafo comparando ambos proyectos.",
 });
 
-for await (const p of res.fullStream) {
+for await (const p of res.stream) {
   parts.push(p.type);
   if (p.type === "text-delta") text += p.delta ?? p.text ?? "";
   else if (p.type === "reasoning-delta") reasoning += p.delta ?? p.text ?? "";

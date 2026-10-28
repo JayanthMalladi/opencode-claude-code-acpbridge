@@ -33,7 +33,7 @@ for (const [name, feat] of Object.entries(FEATURES)) {
       { role: "system", content: `Contexto.\n<env>\n  Working directory: ${process.cwd()}\n  Platform: linux\n</env>` },
       { role: "user", content: "Responde solo: OK" },
     ];
-    for await (const p of streamText({ model, messages }).fullStream) {
+    for await (const p of streamText({ model, messages, allowSystemInMessages: true }).stream) {
       if (p.type === "text-delta") out += (p.delta ?? p.text ?? "");
       else if (p.type === "error") { err = p.error; break; }
     }

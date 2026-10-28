@@ -26,7 +26,7 @@ const sys = (extra) => ({
 
 async function run(label, messages) {
   let out = "", err = null;
-  for await (const p of streamText({ model, messages, providerOptions: { acp: { ocSession: OC } } }).fullStream) {
+  for await (const p of streamText({ model, messages, providerOptions: { acp: { ocSession: OC } }, allowSystemInMessages: true }).stream) {
     if (p.type === "text-delta") out += p.delta ?? p.text ?? "";
     else if (p.type === "error") { err = p.error; break; }
   }
